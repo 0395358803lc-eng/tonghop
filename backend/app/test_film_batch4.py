@@ -457,6 +457,33 @@ class IdempotencyTests(Batch4Case):
 
 
 class CapabilityTests(Batch4Case):
+    def setUp(self):
+        # Capability refresh has replacement semantics, so tests must never
+        # mutate the live production matrix in the shared local SQLite DB.
+        with connect() as conn:
+            self._capability_backup = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT * FROM film_capability_matrix ORDER BY provider,media_type,model"
+                ).fetchall()
+            ]
+            conn.execute("DELETE FROM film_capability_matrix")
+
+    def tearDown(self):
+        columns = (
+            "id", "provider", "model", "media_type", "max_references",
+            "resolutions_json", "durations_json", "aspect_ratios_json",
+            "supports_image_reference", "supports_audio", "raw_json", "checked_at",
+        )
+        placeholders = ",".join("?" for _ in columns)
+        with connect() as conn:
+            conn.execute("DELETE FROM film_capability_matrix")
+            if self._capability_backup:
+                conn.executemany(
+                    f"INSERT INTO film_capability_matrix({','.join(columns)}) VALUES({placeholders})",
+                    [[row.get(col) for col in columns] for row in self._capability_backup],
+                )
+
     def test_capability_matrix_refresh(self):
         rows = ingest_capability_payload("video", {
             "models": ["__B4_VEO__", "Nano Banana 2 Lite crop_16_9 x1", "__B4_VEO__ [Lower Priority]"],
