@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from . import film_production_gate_v2 as gate_v2
 from .film_pipeline_service import (
+    _mark_flow_dependency_blocked,
     build_flow_reference_payload,
     enforce_reference_capacity,
     pause_pipeline,
@@ -16,7 +17,7 @@ from .film_pipeline_service import (
     stop_pipeline,
 )
 from .film_repair_service import build_repair_prompt, is_better_candidate, rank_tuple
-from .film_render_store import create_render_jobs, get_render_job, refresh_render_job_context, update_render_job
+from .film_render_store import create_render_jobs, get_render_job, list_render_jobs, refresh_render_job_context, update_render_job
 from .film_scene_qc_v2 import evaluate_qc_v2
 from .film_scene_state_store import (
     can_transition,
@@ -424,6 +425,59 @@ class PipelineControlTests(unittest.TestCase):
         jobs = create_render_jobs(pid, ["SCENE_ATTEMPT"], "flow", attempt=3)
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]["attempt"], 3)
+
+    def test_session_expired_blocks_without_new_attempt_or_job(self):
+        pid = self.project["id"]
+        scene = {
+            "id": "SCENE_DEP_BLOCK",
+            "scene_index": 50,
+            "flow_prompt": "dependency",
+            "visual_prompt": "dependency",
+        }
+        append_film_scenes(pid, [scene], start_index=50)
+        ensure_scene_states(pid, [scene])
+        upsert_scene_state(pid, scene["id"], 50, status="QUEUED", attempt=2)
+        upsert_scene_state(pid, scene["id"], 50, status="GENERATING", attempt=2)
+        jobs = create_render_jobs(pid, [scene["id"]], "flow", attempt=2)
+        self.assertEqual(len(jobs), 1)
+        job = jobs[0]
+        update_render_job(job["id"], status="generating", progress=35)
+        upsert_scene_state(pid, scene["id"], 50, current_job_id=job["id"], attempt=2)
+
+        before = len([x for x in list_render_jobs(pid) if x.get("scene_id") == scene["id"]])
+        code = _mark_flow_dependency_blocked(
+            pid,
+            scene["id"],
+            50,
+            2,
+            job,
+            "SESSION_EXPIRED: Flow session hết hạn trong lúc đang chờ generation.",
+        )
+        after = len([x for x in list_render_jobs(pid) if x.get("scene_id") == scene["id"]])
+        state = get_scene_state(pid, scene["id"])
+        stored = get_render_job(job["id"])
+
+        self.assertEqual(code, "SESSION_EXPIRED")
+        self.assertEqual(before, after)
+        self.assertEqual(state["status"], "BLOCKED")
+        self.assertEqual(state["attempt"], 2)
+        self.assertEqual(state["current_job_id"], job["id"])
+        self.assertEqual(stored["status"], "generating")
+        self.assertEqual(stored["provider_error_code"], "SESSION_EXPIRED")
+
+        resumed_jobs = create_render_jobs(pid, [scene["id"]], "flow", attempt=2)
+        self.assertEqual(len(resumed_jobs), 1)
+        self.assertEqual(resumed_jobs[0]["id"], job["id"])
+        self.assertEqual(
+            len([x for x in list_render_jobs(pid) if x.get("scene_id") == scene["id"]]),
+            before,
+        )
+
+        fake = dict(self.project)
+        fake["scenes"] = [scene]
+        with patch("app.film_pipeline_service.get_film_project", return_value=fake):
+            with self.assertRaises(ValueError):
+                retry_scene(pid, scene["id"])
 
 
 class ReferenceCapacityPolicyTests(unittest.TestCase):

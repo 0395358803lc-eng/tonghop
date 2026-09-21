@@ -198,6 +198,27 @@ class RecoveryTests(Batch4Case):
         self.assertIn(jid, ids)
         self.assertTrue(list_events(self.pid, event_type="ORPHAN_JOB_DETECTED"))
 
+    def test_dependency_blocked_job_is_not_orphan(self):
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        job = {
+            "status": "generating",
+            "provider_job_id": None,
+            "provider_error_code": "SESSION_EXPIRED",
+            "updated_at": stale,
+        }
+        self.assertEqual(classify_render_job(job, False), "dependency_blocked")
+        jid = _insert_job(
+            self.pid,
+            "SCENE_R",
+            scene_index=2,
+            status="generating",
+            provider_job_id=None,
+            provider_error_code="SESSION_EXPIRED",
+            updated_at=stale,
+        )
+        ids = {item.get("id") for item in detect_orphan_jobs(self.pid)}
+        self.assertNotIn(jid, ids)
+
     def test_recovery_does_not_duplicate_media(self):
         before = _count("SELECT COUNT(*) FROM film_generated_media WHERE project_id=?", (self.pid,))
         reconcile_project(self.pid)

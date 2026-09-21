@@ -8,6 +8,7 @@ import uuid
 from .film_acceptance_snapshot import ensure_acceptance_snapshot
 from .film_media_service import register_scene_video_from_job
 from .film_media_store import get_media, get_selected_media, output_key_for
+from .film_flow_errors import is_flow_dependency_error, render_error_code
 from .film_production_gate import evaluate_production_gate_v2
 from .film_qc_service import get_qc_status
 from .film_render_adapters import get_active_adapter
@@ -54,6 +55,39 @@ MAX_RETRIES = max(1, min(int(os.getenv("FILM_PIPELINE_MAX_RETRIES", str(DEFAULT_
 REFERENCE_PRIORITY = ("character", "previous_last_frame", "location", "critical_prop", "secondary_prop")
 CANONICAL_RESOURCE_TYPES = frozenset({"character", "location", "prop"})
 _PIPELINE_OWNERS: dict[str, str] = {}
+
+
+def _mark_flow_dependency_blocked(
+    project_id: str,
+    scene_id: str,
+    scene_index: int,
+    attempt: int,
+    job: dict,
+    message: str,
+) -> str:
+    code = render_error_code(message)
+    stored = get_render_job(str(job.get("id") or "")) or job
+    status = str(stored.get("status") or "generating")
+    if status not in ACTIVE_RENDER_STATUSES:
+        status = "generating"
+    update_render_job(
+        stored["id"],
+        status=status,
+        progress=int(stored.get("progress") or 35),
+        error=message,
+        provider_error_code=code,
+    )
+    upsert_scene_state(
+        project_id,
+        scene_id,
+        scene_index,
+        status="BLOCKED",
+        attempt=attempt,
+        current_job_id=stored["id"],
+        error=message,
+        blocked_reason=message,
+    )
+    return code
 
 
 def pipeline_worker_active(project_id: str) -> bool:
@@ -509,6 +543,14 @@ DEPENDENCY_RETRY_BLOCKERS = (
     "RESOURCE_LOCK_INCOMPLETE",
     "canonical media",
     "FLOW:",
+    "SESSION_EXPIRED",
+    "REAUTH_REQUIRED",
+    "BRIDGE_AUTH_ERROR",
+    "PROJECT_NOT_FOUND",
+    "FLOW_PROJECT_NOT_FOUND",
+    "FLOW_UI_CHANGED",
+    "CAPABILITY_MISMATCH",
+    "FLOW_CREDITS_INSUFFICIENT",
     "not authenticated",
     "previous scene not approved",
     "CONTINUITY_REFERENCE_PENDING",
@@ -729,8 +771,34 @@ async def process_one_scene(project_id: str, scene: dict, run: dict) -> dict:
             completed = job if skip_render else await _execute_job(job, project, scene, built_refs)
         except Exception as exc:
             message = str(exc)[:2000]
-            match = re.match(r"^([A-Z][A-Z0-9_]+):\s*", message)
-            update_render_job(job["id"], status="failed", progress=100, error=message, provider_error_code=(match.group(1) if match else "RENDER_ERROR"))
+            if is_flow_dependency_error(message):
+                code = _mark_flow_dependency_blocked(
+                    project_id,
+                    scene_id,
+                    scene_index,
+                    attempt,
+                    job,
+                    message,
+                )
+                append_run_log(
+                    run["id"],
+                    {
+                        "action": "dependency_blocked",
+                        "scene_id": scene_id,
+                        "job_id": job.get("id"),
+                        "attempt": attempt,
+                        "provider_error_code": code,
+                    },
+                )
+                raise RuntimeError(message) from exc
+            code = render_error_code(message)
+            update_render_job(
+                job["id"],
+                status="failed",
+                progress=100,
+                error=message,
+                provider_error_code=code,
+            )
             upsert_scene_state(project_id, scene_id, scene_index, status="QC_FAILED", error=message)
             if attempt >= max_retries:
                 upsert_scene_state(project_id, scene_id, scene_index, status="BLOCKED", blocked_reason=message)

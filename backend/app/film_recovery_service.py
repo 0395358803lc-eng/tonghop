@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from .db import connect
 from .film_event_store import emit_event
+from .film_flow_errors import FLOW_DEPENDENCY_ERROR_CODES
 from .film_render_store import ACTIVE_RENDER_STATUSES, get_render_job
 from .film_scene_state_store import (
     acquire_execution_lease,
@@ -54,6 +55,9 @@ def classify_render_job(job: dict | None, lease_active: bool) -> str:
     if status == "failed":
         return "failed_externally"
     if status in ACTIVE_RENDER_STATUSES:
+        code = str(job.get("provider_error_code") or "")
+        if code in FLOW_DEPENDENCY_ERROR_CODES:
+            return "dependency_blocked"
         if job.get("provider_job_id") and lease_active:
             return "still_active"
         updated = _parse(job.get("updated_at"))
