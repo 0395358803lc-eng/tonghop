@@ -50,6 +50,23 @@ def default_voice_profile(character: dict) -> dict:
     }
 
 
+def default_narrator_profile() -> dict:
+    return {
+        "character_id": "NARRATOR",
+        "voice_profile_id": "VOICE_NARRATOR",
+        "language": "vi",
+        "gender": "neutral",
+        "style": "natural cinematic narration",
+        "pitch": "medium",
+        "tempo": "moderate",
+        "emotion_baseline": "calm",
+        "provider": "flow",
+        "provider_voice_id": None,
+        "name": "Narrator",
+        "voice_identity": "same adult Vietnamese narrator; stable neutral timbre, medium pitch, moderate pace, calm intimate delivery",
+    }
+
+
 def list_voice_profiles(project_id: str) -> list[dict]:
     with connect() as conn:
         rows = conn.execute(
@@ -109,6 +126,13 @@ def ensure_voice_profiles(project: dict) -> list[dict]:
         cid = str(character.get("id"))
         if not get_voice_profile(project_id, cid):
             upsert_voice_profile(project_id, cid, default_voice_profile(character))
+    has_voiceover = any(
+        str(scene.get("voiceover") or "").strip()
+        for scene in (project.get("scenes") or [])
+        if isinstance(scene, dict)
+    )
+    if has_voiceover and not get_voice_profile(project_id, "NARRATOR"):
+        upsert_voice_profile(project_id, "NARRATOR", default_narrator_profile())
     return list_voice_profiles(project_id)
 
 

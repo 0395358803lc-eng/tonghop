@@ -4,7 +4,7 @@ import math
 import re
 from copy import deepcopy
 
-from .film_voice_profile_store import default_voice_profile
+from .film_voice_profile_store import default_narrator_profile, default_voice_profile
 
 
 def _hash(value) -> str:
@@ -422,6 +422,10 @@ def compile_flow_prompt(
         voice_refs.append(profile)
     voiceover_value = unit.get("voiceover") if shot is not None else scene.get("voiceover")
     voiceover = str(voiceover_value or "")
+    if voiceover:
+        narrator_profile = default_narrator_profile()
+        if not any(ref.get("voice_profile_id") == "VOICE_NARRATOR" for ref in voice_refs):
+            voice_refs.append(narrator_profile)
     start_state = str(unit.get("start_state") or scene.get("start_state") or "")
     end_state = str(unit.get("end_state") or scene.get("end_state") or "")
     camera = str(unit.get("camera") or scene.get("camera") or "")
@@ -456,7 +460,7 @@ def compile_flow_prompt(
     ]
     prompt = "\n\n".join(f"[{name}]\n{value}" for name, value in sections)
     meta = {
-        "compiler": "deterministic_flow_prompt_v3_voice_lock",
+        "compiler": "deterministic_flow_prompt_v4_narrator_lock",
         "prompt_hash": _hash(prompt),
         "scene_id": scene.get("id"),
         "shot_id": shot.get("id") if shot else None,
@@ -563,7 +567,7 @@ def attach_batch_b_compilation(
         "shot_planner": "deterministic_v1",
         "scene_merge": "deterministic_whitelist_v1",
         "boundary_context": "previous_scene+end_state+location+characters+props+recent_events+prop_history+current_owners+history_fingerprint",
-        "flow_prompt_compiler": "deterministic_flow_prompt_v2",
+        "flow_prompt_compiler": "deterministic_flow_prompt_v4_narrator_lock",
     }
     integrity["gates"] = gates
     integrity["errors"] = errors

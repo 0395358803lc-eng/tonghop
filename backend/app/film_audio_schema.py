@@ -127,7 +127,7 @@ def normalize_audio_requirements(scene: dict, project: dict | None = None) -> di
             errors.append({"code": item["error"], "detail": item.get("text") or "dialogue line"})
         if cid and cid not in speakers:
             speakers.append(cid)
-    if voiceover and not speakers:
+    if voiceover and "NARRATOR" not in speakers:
         speakers.append("NARRATOR")
     visible = [item["speaker_character_id"] for item in dialogue if item.get("visible_speaker_required") and item.get("speaker_character_id")]
     return {

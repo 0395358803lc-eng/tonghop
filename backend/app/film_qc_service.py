@@ -454,6 +454,13 @@ Chỉ trả về JSON object, không markdown:
 }}"""
 
 
+def _speaker_status_requires_block(identity: dict | None) -> bool:
+    if not SPEAKER_REQUIRED or not isinstance(identity, dict):
+        return False
+    status = str(identity.get("status") or "")
+    return status not in {"passed", "enrolled_reference", "not_required"}
+
+
 async def _run_builtin_qc(job: dict, project: dict, scene: dict) -> dict:
     credentials = get_provider(QC_PROVIDER)
     if not credentials:
@@ -577,7 +584,7 @@ async def _run_builtin_qc(job: dict, project: dict, scene: dict) -> dict:
                             ),
                             "expected": "Giọng nói phải khớp acoustic reference của đúng character.",
                         })
-                    elif SPEAKER_REQUIRED and speaker_status == "error":
+                    elif _speaker_status_requires_block(speaker_identity):
                         data["passed"] = False
                         data["consistency_score"] = min(float(data["consistency_score"]), QC_MIN_SCORE - 1)
                         data.setdefault("issues", []).append({
