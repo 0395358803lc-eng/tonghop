@@ -439,7 +439,12 @@ def _prepare_scene_status(project_id: str, scene: dict, run_id: str, from_scene_
         upsert_scene_state(project_id, scene_id, scene_index, current_run_id=run_id, error=None, blocked_reason=None)
         return
     existing_media = get_selected_media(project_id, output_key_for(role="scene_video", scene_id=scene_id))
-    if existing_media and existing_media.get("status") == "completed" and existing_media.get("qc_status") == "passed":
+    if (
+        existing.get("status") != "STALE"
+        and existing_media
+        and existing_media.get("status") == "completed"
+        and existing_media.get("qc_status") == "passed"
+    ):
         meta = existing_media.get("metadata") or {}
         job = get_render_job(str(existing_media.get("provider_job_id") or "")) or {
             "first_frame_url": meta.get("first_frame_url"),
@@ -464,10 +469,12 @@ def _prepare_scene_status(project_id: str, scene: dict, run_id: str, from_scene_
             max_retries=MAX_RETRIES, blocked_reason=f"{scene_id}: previous scene not approved",
         )
         return
+    existing_attempt = int(existing.get("attempt") or 0) if existing.get("attempt") is not None else 0
+    next_attempt = existing_attempt + 1 if existing.get("status") == "STALE" else existing_attempt
     upsert_scene_state(
         project_id, scene_id, scene_index, status="QUEUED", current_run_id=run_id,
         max_retries=MAX_RETRIES,
-        attempt=int(existing.get("attempt") or 0) if existing.get("attempt") is not None else 0,
+        attempt=next_attempt,
         error=None, blocked_reason=None,
     )
 

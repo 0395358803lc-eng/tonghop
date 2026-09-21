@@ -4,6 +4,7 @@ from unittest.mock import patch
 from . import film_production_gate_v2 as gate_v2
 from .film_pipeline_service import (
     _mark_flow_dependency_blocked,
+    _prepare_scene_status,
     build_flow_reference_payload,
     enforce_reference_capacity,
     pause_pipeline,
@@ -211,6 +212,33 @@ class PipelineStoreTests(unittest.TestCase):
         self.assertTrue(prev["required"])
         self.assertFalse(prev["approved"])
         self.assertIsNone(prev["url"])
+
+    def test_prepare_stale_scene_does_not_reapprove_old_selected_media(self):
+        scene = {"id": "SCENE_STALE", "scene_index": 9}
+        existing_media = {
+            "id": "old-media",
+            "status": "completed",
+            "qc_status": "passed",
+            "provider_job_id": "old-job",
+        }
+        with patch(
+            "app.film_pipeline_service.get_scene_state",
+            return_value={"status": "STALE", "attempt": 3},
+        ), patch(
+            "app.film_pipeline_service.get_selected_media",
+            return_value=existing_media,
+        ), patch(
+            "app.film_pipeline_service.has_previous_scene",
+            return_value=False,
+        ), patch(
+            "app.film_pipeline_service.upsert_scene_state",
+        ) as upsert:
+            _prepare_scene_status("P1", scene, "run-1", "SCENE_STALE")
+
+        statuses = [call.kwargs.get("status") for call in upsert.call_args_list]
+        self.assertNotIn("APPROVED", statuses)
+        self.assertEqual(statuses[-1], "QUEUED")
+        self.assertEqual(upsert.call_args_list[-1].kwargs.get("attempt"), 4)
 
     def test_best_candidate_persisted(self):
         pid = self.project["id"]
