@@ -5,6 +5,7 @@ from .film_prompt_policy_migration import (
     POLICY_VERSION,
     apply_prompt_policy_migration,
     build_prompt_policy_migration_plan,
+    rebase_prompt_policy_snapshots,
 )
 
 
@@ -146,6 +147,54 @@ class PromptPolicyMigrationTests(unittest.TestCase):
         self.assertEqual([x["scene_id"] for x in result["rebased"]], ["SCENE_001"])
         self.assertEqual([x["scene_id"] for x in result["stale"]], ["SCENE_002"])
         self.assertEqual(result["source_mutations"], 0)
+
+    def test_rebase_snapshots_keeps_passed_media_and_preserves_existing_stale(self):
+        plan = {
+            "project_id": "P1",
+            "policy": POLICY_VERSION,
+            "blocked": False,
+            "rows": [
+                {
+                    "scene_id": "SCENE_001",
+                    "action": "KEEP_MEDIA_REBASE",
+                    "policy": {"passed": True, "policy": POLICY_VERSION},
+                },
+                {
+                    "scene_id": "SCENE_002",
+                    "action": "STALE_RERENDER",
+                    "policy": {"passed": False, "policy": POLICY_VERSION},
+                    "reason": "SPEAKER_POLICY_FAILED:calibration_ambiguous",
+                },
+            ],
+        }
+        with patch(
+            "app.film_prompt_policy_migration.pipeline_worker_active",
+            return_value=False,
+        ), patch(
+            "app.film_prompt_policy_migration.build_prompt_policy_migration_plan",
+            return_value=plan,
+        ), patch(
+            "app.film_prompt_policy_migration.create_acceptance_snapshot",
+            return_value={"id": "snap-new", "snapshot_hash": "hash-new"},
+        ) as create_snap, patch(
+            "app.film_prompt_policy_migration.snapshot_fingerprint_mismatch",
+            return_value=False,
+        ), patch(
+            "app.film_prompt_policy_migration.get_scene_state",
+            return_value={"status": "STALE"},
+        ), patch(
+            "app.film_prompt_policy_migration.propagate_scene_change",
+        ) as propagate, patch(
+            "app.film_prompt_policy_migration.append_repair_log",
+        ) as append_log:
+            result = rebase_prompt_policy_snapshots("P1", acceptance={"items": []})
+
+        create_snap.assert_called_once()
+        propagate.assert_not_called()
+        append_log.assert_called_once()
+        self.assertEqual([x["scene_id"] for x in result["rebased"]], ["SCENE_001"])
+        self.assertEqual([x["scene_id"] for x in result["stale"]], ["SCENE_002"])
+        self.assertTrue(result["stale"][0]["result"]["already_stale"])
 
     def test_apply_blocks_when_pipeline_active(self):
         with patch(

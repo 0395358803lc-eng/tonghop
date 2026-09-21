@@ -169,6 +169,63 @@ def build_prompt_policy_migration_plan(
     }
 
 
+def rebase_prompt_policy_snapshots(
+    project_id: str,
+    acceptance: dict | None = None,
+) -> dict:
+    if pipeline_worker_active(project_id):
+        raise ValueError("PIPELINE_ACTIVE: không rebase snapshot khi pipeline đang chạy.")
+
+    plan = build_prompt_policy_migration_plan(project_id, acceptance=acceptance)
+    if plan.get("blocked"):
+        raise ValueError(f"PROMPT_POLICY_REBASE_BLOCKED: {plan.get('reason')}")
+
+    rebased = []
+    stale = []
+    for row in plan.get("rows") or []:
+        sid = row["scene_id"]
+        if row["action"] == "KEEP_MEDIA_REBASE":
+            snapshot = create_acceptance_snapshot(
+                project_id,
+                sid,
+                policy_revalidation=row.get("policy") or {},
+            )
+            if snapshot_fingerprint_mismatch(project_id, sid):
+                raise ValueError(f"PROMPT_POLICY_SNAPSHOT_REBASE_FAILED:{sid}")
+            rebased.append({
+                "scene_id": sid,
+                "snapshot_id": (snapshot or {}).get("id"),
+                "snapshot_hash": (snapshot or {}).get("snapshot_hash"),
+            })
+            continue
+
+        reason = f"PROMPT_POLICY_STALE:{row.get('reason') or 'revalidation failed'}"
+        state = get_scene_state(project_id, sid) or {}
+        if state.get("status") != "STALE":
+            result = propagate_scene_change(project_id, sid, reason)
+        else:
+            result = {"scene": state, "already_stale": True}
+        stale.append({"scene_id": sid, "result": result, "reason": reason})
+
+    log_entry = {
+        "version": "prompt-policy-snapshot-rebase-v1",
+        "policy": POLICY_VERSION,
+        "rebased_at": _now(),
+        "rebased_scenes": [item["scene_id"] for item in rebased],
+        "stale_scenes": [item["scene_id"] for item in stale],
+        "source_mutations": 0,
+    }
+    append_repair_log(project_id, log_entry)
+    return {
+        "project_id": project_id,
+        "policy": POLICY_VERSION,
+        "plan": plan,
+        "rebased": rebased,
+        "stale": stale,
+        "source_mutations": 0,
+    }
+
+
 def apply_prompt_policy_migration(
     project_id: str,
     acceptance: dict | None = None,

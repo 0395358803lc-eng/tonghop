@@ -18,6 +18,7 @@ from .film_acceptance_snapshot import (
     propagate_voice_change,
     public_snapshot,
     snapshot_hash,
+    _stable_voice_profile,
 )
 from .film_boundary_store import get_pair_junction, upsert_junction
 from .film_final_store import create_final_render, get_final_render
@@ -183,6 +184,58 @@ class SnapshotTests(unittest.TestCase):
         self.assertTrue(changed)
         from .film_scene_state_store import get_scene_state
         self.assertEqual(get_scene_state(self.pid, "SCENE_001")["status"], "STALE")
+
+    def test_voice_calibration_runtime_fields_do_not_change_stable_fingerprint(self):
+        base = {
+            "gender": "female",
+            "voice_profile_id": "VOICE_CHAR_001",
+            "acoustic_identity": {
+                "backend": "sherpa-onnx",
+                "model": "speaker.onnx",
+                "embedding_dim": 512,
+                "embedding_sha256": "abc123",
+                "enrolled_scene_id": "SCENE_003",
+                "enrolled_at": "2026-09-21T22:14:29+00:00",
+                "threshold": 0.23,
+                "threshold_source": "project_calibrated",
+                "embedding_path": "speaker_embeddings/a.npy",
+                "sample_rate": 16000,
+                "embedding_strategy": "vad-longest",
+            },
+        }
+        recalibrated = {
+            **base,
+            "acoustic_identity": {
+                **base["acoustic_identity"],
+                "enrolled_at": "2026-09-21T22:23:36+00:00",
+                "threshold": 0.19,
+                "threshold_source": "project_calibrated_v2",
+                "embedding_path": "speaker_embeddings/b.npy",
+                "sample_rate": 48000,
+                "embedding_strategy": "new-vad",
+            },
+        }
+        self.assertEqual(_stable_voice_profile(base), _stable_voice_profile(recalibrated))
+
+    def test_voice_embedding_change_changes_stable_fingerprint(self):
+        a = {
+            "gender": "female",
+            "acoustic_identity": {
+                "backend": "sherpa-onnx",
+                "model": "speaker.onnx",
+                "embedding_dim": 512,
+                "embedding_sha256": "aaa",
+                "enrolled_scene_id": "SCENE_003",
+            },
+        }
+        b = {
+            **a,
+            "acoustic_identity": {
+                **a["acoustic_identity"],
+                "embedding_sha256": "bbb",
+            },
+        }
+        self.assertNotEqual(_stable_voice_profile(a), _stable_voice_profile(b))
 
     def test_voice_change_marks_scene_stale(self):
         self._approve("SCENE_001", 0)

@@ -81,6 +81,22 @@ def _voice_ids_for_scene(scene: dict) -> set[str]:
     return voice_ids
 
 
+def _stable_voice_profile(profile: dict | None) -> dict:
+    data = dict(profile or {})
+    acoustic = data.get("acoustic_identity")
+    if isinstance(acoustic, dict):
+        stable_acoustic = {
+            key: acoustic.get(key)
+            for key in ("backend", "model", "embedding_dim", "embedding_sha256", "enrolled_scene_id")
+            if acoustic.get(key) is not None
+        }
+        if stable_acoustic:
+            data["acoustic_identity"] = stable_acoustic
+        else:
+            data.pop("acoustic_identity", None)
+    return data
+
+
 def current_fingerprint(project_id: str, scene_id: str) -> dict:
     project = get_film_project(project_id) or {}
     scene = _scene_of(project, scene_id)
@@ -111,7 +127,7 @@ def current_fingerprint(project_id: str, scene_id: str) -> dict:
             voices.append({
                 "character_id": profile.get("character_id"),
                 "provider_voice_id": profile.get("provider_voice_id"),
-                "profile": profile.get("profile") or {},
+                "profile": _stable_voice_profile(profile.get("profile") or {}),
             })
     audio = get_scene_audio_requirements(project_id, scene_id) or scene_dialogue_requirements(project, scene)
     return {
