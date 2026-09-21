@@ -467,6 +467,7 @@ class CapabilityTests(Batch4Case):
         })
         names = {item["model"] for item in rows}
         self.assertIn("__B4_VEO__", names)
+        self.assertEqual([item["model"] for item in rows], ["__B4_VEO__"])
         self.assertTrue(all("crop" not in name.lower() for name in names))
         self.assertIsNone(canonical_model_name("Nano Banana 2 Lite crop_16_9 x1"))
 

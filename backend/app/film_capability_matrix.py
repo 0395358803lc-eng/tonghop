@@ -107,8 +107,11 @@ def upsert_capability(entry: dict) -> dict:
 
 
 def ingest_capability_payload(media_type: str, payload: dict, *, max_references: int | None = None) -> list[dict]:
-    models = [canonical_model_name(name) for name in (payload.get("models") or [])]
-    models = [name for name in models if name]
+    models: list[str] = []
+    for raw_name in (payload.get("models") or []):
+        name = canonical_model_name(raw_name)
+        if name and name not in models:
+            models.append(name)
     if not models:
         models = ["unknown"]
     saved = []
