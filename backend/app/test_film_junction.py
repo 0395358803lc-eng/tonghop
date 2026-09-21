@@ -7,7 +7,7 @@ from PIL import Image
 from .config import DATA_DIR
 from .db import init_db
 from .film_boundary_qc import evaluate_junction_qc, junction_repair_target, selected_media_usable
-from .film_boundary_service import check_junction, check_junction_async, recheck_junctions_for_scene, recheck_junctions_for_scene_async, refresh_junction_staleness, retry_junction
+from .film_boundary_service import check_junction, check_junction_async, recover_stale_junctions_after_snapshot_rebase, recheck_junctions_for_scene, recheck_junctions_for_scene_async, refresh_junction_staleness, retry_junction
 from .film_boundary_store import get_pair_junction, upsert_junction
 from .film_scene_state_store import get_scene_state, save_ledger, upsert_scene_state
 from .film_store import append_film_scenes, create_film_project, delete_film_project
@@ -351,6 +351,63 @@ class JunctionVisionTests(unittest.TestCase):
         self.assertTrue(report["dimensions"]["dialogue_transition"]["hard"])
         self.assertEqual((report.get("vision") or {}).get("provider"), "test")
         self.assertNotIn("dialogue_transition", report.get("incomplete_dimensions") or [])
+
+    def test_recover_stale_junctions_restores_only_unchanged_approved_pair(self):
+        project = {"scenes": [{"id": "SCENE_001"}, {"id": "SCENE_002"}, {"id": "SCENE_003"}]}
+        rows = [
+            {
+                "previous_scene_id": "SCENE_001",
+                "next_scene_id": "SCENE_002",
+                "status": "STALE",
+                "selected_previous_media_id": "m1",
+                "selected_next_media_id": "m2",
+                "qc": {"version": "junction-qc-v2", "passed": True},
+                "score": 95.0,
+            },
+            {
+                "previous_scene_id": "SCENE_002",
+                "next_scene_id": "SCENE_003",
+                "status": "STALE",
+                "selected_previous_media_id": "m2",
+                "selected_next_media_id": "m3",
+                "qc": {"version": "junction-qc-v2", "passed": True},
+                "score": 96.0,
+            },
+        ]
+        states = {
+            "SCENE_001": {"status": "APPROVED"},
+            "SCENE_002": {"status": "APPROVED"},
+            "SCENE_003": {"status": "STALE"},
+        }
+        media = {
+            "SCENE_001": _selected("SCENE_001", "m1"),
+            "SCENE_002": _selected("SCENE_002", "m2"),
+            "SCENE_003": _selected("SCENE_003", "m3"),
+        }
+        with patch("app.film_boundary_service.get_film_project", return_value=project), patch(
+            "app.film_boundary_service.list_junctions", return_value=rows
+        ), patch(
+            "app.film_boundary_service.get_scene_state",
+            side_effect=lambda _pid, sid: states[sid],
+        ), patch(
+            "app.film_boundary_service._selected_scene_media",
+            side_effect=lambda _pid, sid: media[sid],
+        ), patch(
+            "app.film_boundary_service.get_ledger", return_value={}
+        ), patch(
+            "app.film_boundary_service.resolve_junction_evidence",
+            return_value={"ok": True},
+        ), patch(
+            "app.film_boundary_service.mark_junction",
+            return_value={"status": "PASS"},
+        ) as mark:
+            result = recover_stale_junctions_after_snapshot_rebase("P1")
+
+        self.assertEqual(result["restored_count"], 1)
+        self.assertEqual(result["blocked_count"], 1)
+        self.assertEqual(result["blocked"][0]["reasons"], ["NEXT_NOT_APPROVED"])
+        mark.assert_called_once()
+        self.assertEqual(mark.call_args.args[3], "PASS")
 
 class JunctionAsyncVisionTests(unittest.IsolatedAsyncioTestCase):
 

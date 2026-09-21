@@ -6,6 +6,7 @@ from .film_boundary_qc import (
     evaluate_junction_qc,
     junction_repair_target,
     resolve_junction_evidence,
+    selected_media_usable,
 )
 from .film_boundary_store import get_junction, get_pair_junction, list_junctions, mark_junction, upsert_junction
 from .film_media_store import get_media, get_selected_media, output_key_for
@@ -56,6 +57,100 @@ def refresh_junction_staleness(project_id: str) -> list[dict]:
                 error="JUNCTION_STALE: selected media version changed",
             ))
     return changed
+
+
+
+def recover_stale_junctions_after_snapshot_rebase(project_id: str) -> dict:
+    """Restore only stale PASS junctions whose accepted media/evidence did not change."""
+    project = get_film_project(project_id)
+    if not project:
+        raise ValueError("Không tìm thấy dự án phim.")
+    scenes = {scene["id"]: scene for scene in (project.get("scenes") or [])}
+    restored = []
+    blocked = []
+
+    for row in list_junctions(project_id):
+        if row.get("status") != "STALE":
+            continue
+        prev_id = row["previous_scene_id"]
+        next_id = row["next_scene_id"]
+        prev_state = get_scene_state(project_id, prev_id) or {}
+        next_state = get_scene_state(project_id, next_id) or {}
+        prev_media = _selected_scene_media(project_id, prev_id)
+        next_media = _selected_scene_media(project_id, next_id)
+        prev_ok, prev_err = selected_media_usable(prev_media, prev_id)
+        next_ok, next_err = selected_media_usable(next_media, next_id)
+        evidence = resolve_junction_evidence(
+            scenes.get(prev_id) or {},
+            scenes.get(next_id) or {},
+            get_ledger(project_id, prev_id),
+            get_ledger(project_id, next_id),
+            prev_media,
+            next_media,
+        )
+        qc = row.get("qc") or {}
+        reasons = []
+        if prev_state.get("status") != "APPROVED":
+            reasons.append("PREV_NOT_APPROVED")
+        if next_state.get("status") != "APPROVED":
+            reasons.append("NEXT_NOT_APPROVED")
+        if not prev_ok:
+            reasons.append(prev_err or "PREV_MEDIA_INVALID")
+        if not next_ok:
+            reasons.append(next_err or "NEXT_MEDIA_INVALID")
+        if (prev_media or {}).get("id") != row.get("selected_previous_media_id"):
+            reasons.append("PREV_MEDIA_CHANGED")
+        if (next_media or {}).get("id") != row.get("selected_next_media_id"):
+            reasons.append("NEXT_MEDIA_CHANGED")
+        if not evidence.get("ok"):
+            reasons.append(evidence.get("code") or "EVIDENCE_INVALID")
+        if qc.get("passed") is not True:
+            reasons.append("OLD_QC_NOT_PASSED")
+        if qc.get("version") != JUNCTION_QC_VERSION:
+            reasons.append("QC_VERSION_MISMATCH")
+
+        if reasons:
+            blocked.append({
+                "previous_scene_id": prev_id,
+                "next_scene_id": next_id,
+                "reasons": reasons,
+            })
+            continue
+
+        restored_row = mark_junction(
+            project_id,
+            prev_id,
+            next_id,
+            "PASS",
+            selected_previous_media_id=(prev_media or {}).get("id"),
+            selected_next_media_id=(next_media or {}).get("id"),
+            qc=qc,
+            score=row.get("score"),
+            error=None,
+        )
+        restored.append(restored_row)
+
+    if restored:
+        try:
+            from .film_event_store import emit_event
+            emit_event(
+                project_id,
+                "JUNCTION_STALE_RECOVERED",
+                payload={
+                    "restored_count": len(restored),
+                    "blocked_count": len(blocked),
+                    "method": "deterministic_snapshot_rebase",
+                },
+            )
+        except Exception:
+            pass
+    return {
+        "project_id": project_id,
+        "restored": restored,
+        "blocked": blocked,
+        "restored_count": len(restored),
+        "blocked_count": len(blocked),
+    }
 
 
 def _vision_runner(project: dict, previous_scene: dict, next_scene: dict):
