@@ -14,6 +14,10 @@ FLOW_DEPENDENCY_ERROR_CODES = frozenset({
     "FLOW_CREDITS_INSUFFICIENT",
 })
 
+FLOW_TERMINAL_ERROR_CODES = frozenset({
+    "FLOW_POLICY_BLOCKED",
+})
+
 
 def render_error_code(message: str | None) -> str:
     text = str(message or "").strip()
@@ -23,3 +27,7 @@ def render_error_code(message: str | None) -> str:
 
 def is_flow_dependency_error(message: str | None) -> bool:
     return render_error_code(message) in FLOW_DEPENDENCY_ERROR_CODES
+
+
+def is_terminal_render_error(message: str | None) -> bool:
+    return render_error_code(message) in FLOW_TERMINAL_ERROR_CODES

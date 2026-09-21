@@ -8,7 +8,7 @@ import uuid
 from .film_acceptance_snapshot import ensure_acceptance_snapshot
 from .film_media_service import register_scene_video_from_job
 from .film_media_store import get_media, get_selected_media, output_key_for
-from .film_flow_errors import is_flow_dependency_error, render_error_code
+from .film_flow_errors import is_flow_dependency_error, is_terminal_render_error, render_error_code
 from .film_production_gate import evaluate_production_gate_v2
 from .film_qc_service import get_qc_status
 from .film_render_adapters import get_active_adapter
@@ -55,6 +55,22 @@ MAX_RETRIES = max(1, min(int(os.getenv("FILM_PIPELINE_MAX_RETRIES", str(DEFAULT_
 REFERENCE_PRIORITY = ("character", "previous_last_frame", "location", "critical_prop", "secondary_prop")
 CANONICAL_RESOURCE_TYPES = frozenset({"character", "location", "prop"})
 _PIPELINE_OWNERS: dict[str, str] = {}
+
+FLOW_PROVIDER_FICTIONAL_CONTEXT = (
+    "[FICTIONAL_CHARACTER_CONTEXT]\n"
+    "All named characters in this scene are original fictional characters created for this story. "
+    "They are not based on, intended to resemble, or impersonate any real person. "
+    "Preserve only the locked fictional canonical design and story continuity."
+)
+
+
+def _flow_provider_safety_prompt(prompt: str | None) -> str:
+    base = str(prompt or "").strip()
+    if not base:
+        return FLOW_PROVIDER_FICTIONAL_CONTEXT
+    if "[FICTIONAL_CHARACTER_CONTEXT]" in base:
+        return base
+    return f"{FLOW_PROVIDER_FICTIONAL_CONTEXT}\n\n{base}"
 
 
 def _mark_flow_dependency_blocked(
@@ -364,6 +380,9 @@ async def _execute_job(job: dict, project: dict, scene: dict, reference_payload:
     if not adapter.configured:
         raise RuntimeError("FLOW: video capability unavailable")
     current = refresh_render_job_context(job["id"]) or get_render_job(job["id"])
+    provider_prompt = _flow_provider_safety_prompt((current or {}).get("prompt"))
+    if provider_prompt != str((current or {}).get("prompt") or "").strip():
+        current = update_render_job(job["id"], prompt=provider_prompt) or current
     reference = current.get("reference") or {}
     resource_manifest = scene_resource_manifest(project, scene, "flow")
     if not resource_manifest.get("ready"):
@@ -439,8 +458,10 @@ def _prepare_scene_status(project_id: str, scene: dict, run_id: str, from_scene_
         upsert_scene_state(project_id, scene_id, scene_index, current_run_id=run_id, error=None, blocked_reason=None)
         return
     existing_media = get_selected_media(project_id, output_key_for(role="scene_video", scene_id=scene_id))
+    force_generation = bool((existing.get("snapshot") or {}).get("operator_force_generation"))
     if (
         existing.get("status") != "STALE"
+        and not force_generation
         and existing_media
         and existing_media.get("status") == "completed"
         and existing_media.get("qc_status") == "passed"
@@ -603,7 +624,11 @@ def retry_scene(project_id: str, scene_id: str) -> dict:
         # Operator-controlled recovery after a terminal BLOCKED state:
         # preserve all historical jobs/media/candidates, but allocate one new
         # monotonically increasing attempt and detach the old terminal job.
+        # The force-generation marker prevents _prepare_scene_status() from
+        # silently re-approving the previously selected media.
         next_attempt = int(state.get("attempt") or 0) + 1
+        snapshot["operator_force_generation"] = True
+        snapshot["operator_retry_source_attempt"] = int(state.get("attempt") or 0)
         upsert_scene_state(
             project_id,
             scene_id,
@@ -778,6 +803,36 @@ async def process_one_scene(project_id: str, scene: dict, run: dict) -> dict:
             completed = job if skip_render else await _execute_job(job, project, scene, built_refs)
         except Exception as exc:
             message = str(exc)[:2000]
+            if is_terminal_render_error(message):
+                code = render_error_code(message)
+                update_render_job(
+                    job["id"],
+                    status="failed",
+                    progress=100,
+                    error=message,
+                    provider_error_code=code,
+                )
+                upsert_scene_state(
+                    project_id,
+                    scene_id,
+                    scene_index,
+                    status="BLOCKED",
+                    attempt=attempt,
+                    current_job_id=job["id"],
+                    error=message,
+                    blocked_reason=message,
+                )
+                append_run_log(
+                    run["id"],
+                    {
+                        "action": "terminal_render_blocked",
+                        "scene_id": scene_id,
+                        "job_id": job.get("id"),
+                        "attempt": attempt,
+                        "provider_error_code": code,
+                    },
+                )
+                raise RuntimeError(message) from exc
             if is_flow_dependency_error(message):
                 code = _mark_flow_dependency_blocked(
                     project_id,

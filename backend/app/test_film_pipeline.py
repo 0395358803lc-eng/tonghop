@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from . import film_production_gate_v2 as gate_v2
 from .film_pipeline_service import (
+    _flow_provider_safety_prompt,
     _mark_flow_dependency_blocked,
     _prepare_scene_status,
     build_flow_reference_payload,
@@ -17,6 +18,7 @@ from .film_pipeline_service import (
     start_pipeline,
     stop_pipeline,
 )
+from .film_flow_errors import is_terminal_render_error
 from .film_repair_service import build_repair_prompt, is_better_candidate, rank_tuple
 from .film_render_store import create_render_jobs, get_render_job, list_render_jobs, refresh_render_job_context, update_render_job
 from .film_scene_qc_v2 import evaluate_qc_v2
@@ -62,6 +64,28 @@ class SceneStatusMachineTests(unittest.TestCase):
         self.assertEqual(transition_status("APPROVED", "STALE"), "STALE")
         self.assertEqual(transition_status("STALE", "WAITING_REFERENCE"), "WAITING_REFERENCE")
 
+
+
+
+
+class FlowProviderSafetyTests(unittest.TestCase):
+    def test_fictional_context_is_added_once_without_changing_story_text(self):
+        base = "[UNIT]\nSCENE_X\n\n[SOURCE_ACTION_IMMUTABLE]\nOriginal story action."
+        wrapped = _flow_provider_safety_prompt(base)
+        self.assertTrue(wrapped.startswith("[FICTIONAL_CHARACTER_CONTEXT]"))
+        self.assertIn("original fictional characters", wrapped)
+        self.assertIn(base, wrapped)
+        self.assertEqual(_flow_provider_safety_prompt(wrapped), wrapped)
+
+    def test_policy_block_is_terminal_render_error(self):
+        self.assertTrue(
+            is_terminal_render_error(
+                "FLOW_POLICY_BLOCKED: request may violate public figure policy"
+            )
+        )
+        self.assertFalse(
+            is_terminal_render_error("GENERATION_TIMEOUT: provider timed out")
+        )
 
 class QcV2HardGateTests(unittest.TestCase):
     def test_identity_fail_even_if_overall_high(self):
@@ -234,6 +258,38 @@ class PipelineStoreTests(unittest.TestCase):
             "app.film_pipeline_service.upsert_scene_state",
         ) as upsert:
             _prepare_scene_status("P1", scene, "run-1", "SCENE_STALE")
+
+        statuses = [call.kwargs.get("status") for call in upsert.call_args_list]
+        self.assertNotIn("APPROVED", statuses)
+        self.assertEqual(statuses[-1], "QUEUED")
+        self.assertEqual(upsert.call_args_list[-1].kwargs.get("attempt"), 4)
+
+    def test_prepare_operator_retry_does_not_reapprove_old_selected_media(self):
+        scene = {"id": "SCENE_RETRY", "scene_index": 10}
+        existing_media = {
+            "id": "old-media",
+            "status": "completed",
+            "qc_status": "passed",
+            "provider_job_id": "old-job",
+        }
+        state = {
+            "status": "QUEUED",
+            "attempt": 4,
+            "snapshot": {"operator_force_generation": True},
+        }
+        with patch(
+            "app.film_pipeline_service.get_scene_state",
+            return_value=state,
+        ), patch(
+            "app.film_pipeline_service.get_selected_media",
+            return_value=existing_media,
+        ), patch(
+            "app.film_pipeline_service.has_previous_scene",
+            return_value=False,
+        ), patch(
+            "app.film_pipeline_service.upsert_scene_state",
+        ) as upsert:
+            _prepare_scene_status("P1", scene, "run-2", "SCENE_RETRY")
 
         statuses = [call.kwargs.get("status") for call in upsert.call_args_list]
         self.assertNotIn("APPROVED", statuses)
@@ -443,6 +499,43 @@ class PipelineControlTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 retry_scene(pid, "SCENE_R")
 
+
+    def test_retry_terminal_block_forces_new_generation(self):
+        pid = self.project["id"]
+        scene = {"id": "SCENE_FORCE", "scene_index": 60}
+        fake = dict(self.project)
+        fake["scenes"] = [scene]
+        append_film_scenes(pid, [scene], start_index=60)
+        ensure_scene_states(pid, [scene])
+        upsert_scene_state(
+            pid,
+            scene["id"],
+            60,
+            status="BLOCKED",
+            attempt=2,
+            current_job_id="old-terminal-job",
+            blocked_reason="FLOW_RUNTIME_ERROR: prior render failed",
+            error="FLOW_RUNTIME_ERROR: prior render failed",
+            force=True,
+        )
+        with patch(
+            "app.film_pipeline_service.get_film_project",
+            return_value=fake,
+        ), patch(
+            "app.film_pipeline_service.get_active_run",
+            return_value=None,
+        ), patch(
+            "app.film_pipeline_service.start_pipeline",
+            return_value={"project_id": pid},
+        ):
+            retry_scene(pid, scene["id"])
+
+        state = get_scene_state(pid, scene["id"]) or {}
+        self.assertEqual(state["status"], "QUEUED")
+        self.assertEqual(state["attempt"], 3)
+        self.assertIsNone(state["current_job_id"])
+        self.assertTrue((state.get("snapshot") or {}).get("operator_force_generation"))
+        self.assertEqual((state.get("snapshot") or {}).get("operator_retry_source_attempt"), 2)
 
     def test_create_render_job_uses_pipeline_attempt(self):
         pid = self.project["id"]
