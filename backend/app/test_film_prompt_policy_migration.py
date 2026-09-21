@@ -48,8 +48,10 @@ class PromptPolicyMigrationTests(unittest.TestCase):
                 {
                     "scene_id": "SCENE_002",
                     "passed": False,
+                    "policy_accepted": False,
+                    "verification_state": "blocked",
                     "stt_passed": True,
-                    "status": "calibration_ambiguous",
+                    "status": "failed",
                     "speaker_character_id": "NARRATOR",
                 }
             ]
@@ -87,6 +89,60 @@ class PromptPolicyMigrationTests(unittest.TestCase):
         self.assertEqual(by_scene["SCENE_001"]["action"], "KEEP_MEDIA_REBASE")
         self.assertEqual(by_scene["SCENE_002"]["action"], "STALE_RERENDER")
         self.assertIn("SPEAKER_POLICY_FAILED", by_scene["SCENE_002"]["reason"])
+
+
+    def test_plan_keeps_unverified_ambiguous_speaker_with_warning(self):
+        project = self._project()
+        acceptance = {
+            "items": [
+                {
+                    "scene_id": "SCENE_002",
+                    "passed": False,
+                    "policy_accepted": True,
+                    "verification_state": "unverified",
+                    "stt_passed": True,
+                    "status": "calibration_ambiguous",
+                    "speaker_character_id": "NARRATOR",
+                    "raw_similarity": 0.149349,
+                }
+            ]
+        }
+        states = {
+            "SCENE_001": {"status": "APPROVED", "selected_media_id": "m1"},
+            "SCENE_002": {"status": "APPROVED", "selected_media_id": "m2"},
+        }
+
+        with patch(
+            "app.film_prompt_policy_migration.get_film_project",
+            return_value=project,
+        ), patch(
+            "app.film_prompt_policy_migration.verify_source_lock",
+            return_value=(True, None),
+        ), patch(
+            "app.film_prompt_policy_migration.get_scene_state",
+            side_effect=lambda _pid, sid: states[sid],
+        ), patch(
+            "app.film_prompt_policy_migration.validate_approval_for_snapshot",
+            return_value=(True, None),
+        ), patch(
+            "app.film_prompt_policy_migration.compile_flow_prompt",
+            side_effect=[
+                ("new-1", {"compiler": POLICY_VERSION, "prompt_hash": "new-h1"}),
+                ("new-2", {"compiler": POLICY_VERSION, "prompt_hash": "new-h2"}),
+            ],
+        ):
+            plan = build_prompt_policy_migration_plan("P1", acceptance=acceptance)
+
+        self.assertEqual(plan["keep_media_count"], 2)
+        self.assertEqual(plan["stale_rerender_count"], 0)
+        by_scene = {row["scene_id"]: row for row in plan["rows"]}
+        row = by_scene["SCENE_002"]
+        self.assertEqual(row["action"], "KEEP_MEDIA_REBASE")
+        self.assertTrue(row["policy"]["passed"])
+        self.assertFalse(row["policy"]["strict_verified"])
+        self.assertEqual(row["policy"]["verification_state"], "unverified")
+        self.assertIn("SPEAKER_IDENTITY_UNVERIFIED", row["policy"]["warning"])
+        self.assertIsNone(row["reason"])
 
     def test_plan_recovers_only_snapshot_fingerprint_stale(self):
         project = self._project()

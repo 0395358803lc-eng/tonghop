@@ -56,6 +56,19 @@ def run_project_speaker_acceptance(project_id: str, recalibrate: bool = True) ->
         identity = verify_or_enroll_scene_speaker(project, scene, path, speech)
         status = str(identity.get("status") or "not_evaluated")
         passed = status in {"enrolled_reference", "passed", "not_required"}
+        unverified = status in {"calibration_ambiguous", "calibration_pending"}
+        policy_accepted = passed or unverified
+        verification_state = (
+            "verified"
+            if status == "passed"
+            else "baseline"
+            if status == "enrolled_reference"
+            else "not_required"
+            if status == "not_required"
+            else "unverified"
+            if unverified
+            else "blocked"
+        )
         items.append({
             "scene_id": scene["id"],
             "media_id": media.get("id"),
@@ -63,6 +76,8 @@ def run_project_speaker_acceptance(project_id: str, recalibrate: bool = True) ->
             "speaker_character_id": identity.get("speaker_character_id"),
             "status": status,
             "passed": passed,
+            "policy_accepted": policy_accepted,
+            "verification_state": verification_state,
             "speaker_similarity": identity.get("speaker_similarity"),
             "speaker_similarity_percent": identity.get("speaker_similarity_percent"),
             "raw_similarity": identity.get("raw_similarity"),
@@ -85,10 +100,20 @@ def run_project_speaker_acceptance(project_id: str, recalibrate: bool = True) ->
 
     verified = [item for item in items if item.get("status") == "passed"]
     enrolled = [item for item in items if item.get("status") == "enrolled_reference"]
+    unverified = [
+        item for item in items
+        if item.get("status") in {"calibration_ambiguous", "calibration_pending"}
+    ]
     failed = [item for item in items if item.get("status") == "failed"]
     blocked = [
         item for item in items
-        if item.get("status") not in {"passed", "enrolled_reference", "not_required"}
+        if item.get("status") not in {
+            "passed",
+            "enrolled_reference",
+            "not_required",
+            "calibration_ambiguous",
+            "calibration_pending",
+        }
     ]
     similarities = [
         float(item["speaker_similarity"])
@@ -116,13 +141,16 @@ def run_project_speaker_acceptance(project_id: str, recalibrate: bool = True) ->
         "speech_scenes": len(items),
         "enrolled_references": len(enrolled),
         "verified_scenes": len(verified),
+        "unverified_scenes": len(unverified),
         "failed_scenes": len(failed),
         "blocked_scenes": len(blocked),
+        "policy_accepted": bool(items) and not failed and not blocked,
+        "fully_verified": bool(items) and not failed and not blocked and not unverified and (calibration or {}).get("status") == "calibrated",
         "min_similarity": round(min(similarities), 6) if similarities else None,
         "max_similarity": round(max(similarities), 6) if similarities else None,
         "average_similarity": (
             round(sum(similarities) / len(similarities), 6) if similarities else None
         ),
-        "passed": bool(items) and (calibration or {}).get("status") == "calibrated" and not failed and not blocked,
+        "passed": bool(items) and not failed and not blocked and not unverified and (calibration or {}).get("status") == "calibrated",
         "items": items,
     }

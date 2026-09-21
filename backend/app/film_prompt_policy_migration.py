@@ -52,22 +52,36 @@ def build_policy_revalidation(project: dict, acceptance: dict) -> dict[str, dict
                 "reason": "SPEAKER_ACCEPTANCE_MISSING",
             }
             continue
-        passed = bool(item.get("passed")) and item.get("stt_passed") is True
+        policy_accepted = bool(item.get("policy_accepted", item.get("passed"))) and item.get("stt_passed") is True
+        strict_verified = bool(item.get("passed"))
+        verification_state = str(
+            item.get("verification_state")
+            or ("verified" if strict_verified else "blocked")
+        )
+        warning = None
+        if policy_accepted and not strict_verified:
+            warning = (
+                f"SPEAKER_IDENTITY_UNVERIFIED:{item.get('status') or 'not_evaluated'}"
+            )
         result[sid] = {
             "policy": POLICY_VERSION,
-            "passed": passed,
+            "passed": policy_accepted,
+            "strict_verified": strict_verified,
+            "verification_state": verification_state,
+            "warning": warning,
             "method": "speaker_acceptance",
             "speech_required": True,
             "expected_speakers": req.get("speakers") or [],
             "speaker_character_id": item.get("speaker_character_id"),
             "speaker_status": item.get("status"),
             "speaker_similarity": item.get("speaker_similarity"),
+            "raw_similarity": item.get("raw_similarity"),
             "threshold": item.get("threshold"),
             "threshold_source": item.get("threshold_source"),
             "stt_passed": item.get("stt_passed"),
             "stt_match_score": item.get("stt_match_score"),
             "reference_scene_id": item.get("reference_scene_id"),
-            "reason": None if passed else (
+            "reason": None if policy_accepted else (
                 item.get("error")
                 or f"SPEAKER_POLICY_FAILED:{item.get('status') or 'not_evaluated'}"
             ),

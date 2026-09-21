@@ -454,11 +454,21 @@ Chỉ trả về JSON object, không markdown:
 }}"""
 
 
+SPEAKER_UNVERIFIED_STATUSES = frozenset({"calibration_ambiguous", "calibration_pending"})
+SPEAKER_ACCEPTED_STATUSES = frozenset({"passed", "enrolled_reference", "not_required"}) | SPEAKER_UNVERIFIED_STATUSES
+
+
+def _speaker_status_is_unverified(identity: dict | None) -> bool:
+    if not isinstance(identity, dict):
+        return False
+    return str(identity.get("status") or "") in SPEAKER_UNVERIFIED_STATUSES
+
+
 def _speaker_status_requires_block(identity: dict | None) -> bool:
     if not SPEAKER_REQUIRED or not isinstance(identity, dict):
         return False
     status = str(identity.get("status") or "")
-    return status not in {"passed", "enrolled_reference", "not_required"}
+    return status not in SPEAKER_ACCEPTED_STATUSES
 
 
 async def _run_builtin_qc(job: dict, project: dict, scene: dict) -> dict:
@@ -592,6 +602,19 @@ async def _run_builtin_qc(job: dict, project: dict, scene: dict) -> dict:
                             "severity": "high",
                             "evidence": str(speaker_identity.get("error") or "Speaker verification error"),
                             "expected": "Speaker verification phải chạy được khi scene có dialogue.",
+                        })
+                    elif _speaker_status_is_unverified(speaker_identity):
+                        data.setdefault("issues", []).append({
+                            "type": "voice_identity_unverified",
+                            "severity": "warning",
+                            "evidence": (
+                                f"Speaker verification chưa đủ calibration để enforce; "
+                                f"status={speaker_status}, raw_similarity={speaker_identity.get('raw_similarity')}"
+                            ),
+                            "expected": (
+                                "Giữ trạng thái UNVERIFIED cho tới khi acoustic calibration đủ phân biệt; "
+                                "không hạ threshold và không tuyên bố voice continuity đã được xác minh."
+                            ),
                         })
                 score = float(data["consistency_score"])
                 return {
