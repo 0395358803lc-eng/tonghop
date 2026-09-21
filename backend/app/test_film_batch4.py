@@ -674,12 +674,12 @@ class CapabilityTests(Batch4Case):
             with connect() as conn:
                 conn.execute("DELETE FROM film_capability_matrix WHERE model='__B4_VEO_LITE__'")
 
-    def test_missing_selector_returns_capability_mismatch(self):
+    def test_missing_selector_returns_flow_ui_changed(self):
         import sys
         sys.path.insert(0, "backend")
         from flow_bridge.app import _classify_error
         code = _classify_error(RuntimeError("Không tìm thấy selector model để chuyển sang Video."))
-        self.assertEqual(code, "CAPABILITY_MISMATCH")
+        self.assertEqual(code, "FLOW_UI_CHANGED")
 
     def test_low_priority_model_never_falls_back_to_paid_variant(self):
         from flow_bridge.browser import model_selection_variants

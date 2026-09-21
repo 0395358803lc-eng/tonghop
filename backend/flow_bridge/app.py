@@ -93,10 +93,22 @@ def _classify_error(exc: Exception) -> str:
         return "FLOW_CREDITS_INSUFFICIENT"
     if "download" in message or "tải xuống" in message or "file video" in message:
         return "DOWNLOAD_ERROR"
+    # UI/selector errors must be classified before generic model/capability words.
+    # Otherwise "không tìm thấy selector model" is incorrectly reported as
+    # CAPABILITY_MISMATCH and hides the real Flow DOM regression.
+    if (
+        "không tìm thấy nút" in message
+        or "generate vẫn disabled" in message
+        or "selector" in message
+        or "flow_ui_not_ready" in message
+        or "model_selection_mismatch" in message
+        or "không hiển thị mode" in message
+        or "không mở được panel cài đặt" in message
+        or "ui" in message
+    ):
+        return "FLOW_UI_CHANGED"
     if "model" in message or "resolution" in message or "thời lượng" in message or "aspect" in message:
         return "CAPABILITY_MISMATCH"
-    if "không tìm thấy nút" in message or "generate vẫn disabled" in message or "selector" in message or "ui" in message:
-        return "FLOW_UI_CHANGED"
     return "FLOW_RUNTIME_ERROR"
 
 

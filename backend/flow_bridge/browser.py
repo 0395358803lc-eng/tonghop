@@ -405,8 +405,10 @@ class FlowBrowser:
         raise FlowBrowserError(f"Không tìm thấy nút Flow: {needles}")
 
     async def _find_model_button(self, page: Page):
-        """Fallback strategy (§20): aria canonical -> text fallback.
+        """Find Flow model trigger using live-DOM-backed fallbacks.
 
+        Current UI (2026-09-22) exposes no stable data-* attributes. Prefer:
+        aria-label -> Material menu-trigger class + model evidence -> visible text.
         Returns (locator, strategy_name) or (None, 'missing').
         """
         for selector in MODEL_BUTTON_SELECTORS:
@@ -416,6 +418,25 @@ class FlowBrowser:
                     return loc, f"aria:{selector}"
             except Exception:
                 continue
+
+        # Stable framework-class fallback. Never accept a generic menu trigger
+        # unless its own text/aria proves it is the model control.
+        try:
+            candidates = page.locator("button.mat-mdc-menu-trigger:visible")
+            total = min(await candidates.count(), 40)
+            for i in range(total):
+                candidate = candidates.nth(i)
+                try:
+                    text = (await candidate.inner_text(timeout=300)).strip()
+                    aria = str(await candidate.get_attribute("aria-label") or "")
+                except Exception:
+                    continue
+                blob = f"{text} {aria}".lower()
+                if "veo" in blob or "omni" in blob or "mô hình" in blob or "model" in blob:
+                    return candidate, "class:mat-mdc-menu-trigger+model-evidence"
+        except Exception:
+            pass
+
         # role=button + visible text fallback: model family names with dropdown arrow
         try:
             candidates = page.locator("button:visible")
@@ -430,6 +451,44 @@ class FlowBrowser:
         except Exception:
             pass
         return None, "missing"
+
+    async def _selector_evidence(self, page: Page) -> dict:
+        """Small non-prompt DOM snapshot for actionable Flow UI failures."""
+        evidence: dict = {"url": page.url}
+        try:
+            radios = page.locator('[role="radio"]:visible')
+            values = []
+            for i in range(min(await radios.count(), 12)):
+                try:
+                    values.append((await radios.nth(i).inner_text(timeout=300)).strip().replace("\n", " "))
+                except Exception:
+                    continue
+            evidence["mode_controls"] = values
+        except Exception:
+            evidence["mode_controls"] = []
+        try:
+            model_button, strategy = await self._find_model_button(page)
+            evidence["model_strategy"] = strategy
+            evidence["model_text"] = (
+                (await model_button.inner_text(timeout=500)).strip().replace("\n", " ")
+                if model_button is not None else None
+            )
+        except Exception:
+            evidence["model_strategy"] = "evidence_error"
+            evidence["model_text"] = None
+        try:
+            settings = page.locator(
+                'button.settings-trigger-button:visible, '
+                'button[aria-label*="cài đặt"]:visible, '
+                'button[aria-label*="settings" i]:visible'
+            ).first
+            evidence["settings_text"] = (
+                (await settings.inner_text(timeout=500)).strip().replace("\n", " ")
+                if await settings.count() else None
+            )
+        except Exception:
+            evidence["settings_text"] = None
+        return evidence
 
     async def _wait_for_settings_panel(self, page: Page, timeout_ms: int = 6000) -> bool:
         """Detect the currently-open Flow settings overlay without toggling it.
@@ -562,6 +621,26 @@ class FlowBrowser:
         async def _click_alias() -> bool:
             # Retry a few times: panel may still be rendering after open.
             for _ in range(3):
+                # Current Flow UI exposes generation mode as Material button toggles
+                # with role=radio. Prefer that semantic control before generic buttons.
+                radios = page.locator('[role="radio"]:visible')
+                try:
+                    radio_count = min(await radios.count(), 12)
+                except Exception:
+                    radio_count = 0
+                for i in range(radio_count):
+                    radio = radios.nth(i)
+                    try:
+                        text = (await radio.inner_text(timeout=600)).strip().replace("\n", " ")
+                        aria = str(await radio.get_attribute("aria-label") or "")
+                    except Exception:
+                        continue
+                    cleaned = f"{text} {aria}".replace("image", "").replace("videocam", "").strip()
+                    if any(alias.lower() == cleaned.lower() or alias.lower() in cleaned.lower() for alias in aliases):
+                        await radio.click(force=True)
+                        await page.wait_for_timeout(400)
+                        return True
+
                 buttons = page.locator("button:visible")
                 try:
                     count = await buttons.count()
@@ -599,9 +678,10 @@ class FlowBrowser:
                 total = await page.locator("button:visible").count()
             except Exception:
                 total = -1
+            evidence = await self._selector_evidence(page)
             raise FlowBrowserError(
                 f"Không tìm thấy selector model để chuyển sang {mode}. "
-                f"(strategy=missing, visible_buttons={total}, url={page.url})"
+                f"(strategy=missing, visible_buttons={total}, evidence={evidence})"
             )
         await model_button.click(force=True)
         await page.wait_for_timeout(600)
@@ -612,7 +692,8 @@ class FlowBrowser:
             await page.keyboard.press("Escape")
         except Exception:
             pass
-        raise FlowBrowserError(f"Flow không hiển thị mode {mode}.")
+        evidence = await self._selector_evidence(page)
+        raise FlowBrowserError(f"Flow không hiển thị mode {mode}. evidence={evidence}")
 
     async def configure_video(
         self,
@@ -634,7 +715,8 @@ class FlowBrowser:
             await self._ensure_settings_open(page)
             model_button, _strategy = await self._find_model_button(page)
             if model_button is None:
-                raise FlowBrowserError("Không tìm thấy selector model Flow.")
+                evidence = await self._selector_evidence(page)
+                raise FlowBrowserError(f"Không tìm thấy selector model Flow. evidence={evidence}")
             await model_button.click(force=True)
             await page.wait_for_timeout(600)
             variants = model_selection_variants(model)
@@ -654,8 +736,9 @@ class FlowBrowser:
                     last_error = exc
                     continue
             if last_error is not None:
+                evidence = await self._selector_evidence(page)
                 raise FlowBrowserError(
-                    f"Không tìm thấy model Flow '{model}' (thử {variants})."
+                    f"Không tìm thấy model Flow '{model}' (thử {variants}). evidence={evidence}"
                 ) from last_error
             await page.wait_for_timeout(300)
             if low_priority_required:
@@ -669,9 +752,10 @@ class FlowBrowser:
                     except Exception:
                         verify_text = ""
                 if "[lower priority]" not in verify_text.lower():
+                    evidence = await self._selector_evidence(page)
                     raise FlowBrowserError(
                         f"MODEL_SELECTION_MISMATCH: yêu cầu '{model}' nhưng UI đang giữ "
-                        f"'{verify_text}'. Abort để không tốn credits."
+                        f"'{verify_text}'. Abort để không tốn credits. evidence={evidence}"
                     )
 
         await self._ensure_settings_open(page)
