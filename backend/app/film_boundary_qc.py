@@ -61,6 +61,18 @@ def _dim(score, threshold, hard, issue=None, evidence=None):
     }
 
 
+def _not_required_dim(threshold, evidence=None):
+    return {
+        "score": None,
+        "threshold": threshold,
+        "status": "not_required",
+        "passed": None,
+        "hard": False,
+        "issue": None,
+        "evidence": evidence,
+    }
+
+
 def _ids(value) -> set[str]:
     if not value:
         return set()
@@ -97,14 +109,34 @@ def _transfers(scene: dict | None) -> set[str]:
     return found
 
 
+def _boundary_prop_ids(scene: dict, *, side: str) -> set[str]:
+    """Props that actually exist at the visual boundary of a scene."""
+    ids = {str(x) for x in (scene.get("props_present") or []) if x}
+    structured_key = "end_state_structured" if side == "end" else "start_state_structured"
+    structured = scene.get(structured_key)
+    if isinstance(structured, dict):
+        raw_props = structured.get("props") or {}
+        if isinstance(raw_props, dict):
+            ids.update(str(x) for x in raw_props if x)
+    return ids
+
+
 def _critical_props(prev_scene: dict, next_scene: dict) -> set[str]:
-    props = set()
+    """Return only props whose state/holder must survive this boundary.
+
+    A prop that exists only in the next scene is an introduction/reveal, not a
+    direct boundary-continuity obligation. Explicit transfers always remain
+    hard because they encode a cross-scene ownership/state change.
+    """
+    prev_boundary = _boundary_prop_ids(prev_scene, side="end")
+    next_boundary = _boundary_prop_ids(next_scene, side="start")
+    shared = prev_boundary & next_boundary
+    transferred = _transfers(prev_scene) | _transfers(next_scene)
+    explicit = set()
     for scene in (prev_scene, next_scene):
         continuity = scene.get("continuity") if isinstance(scene.get("continuity"), dict) else {}
-        props.update(str(x) for x in (continuity.get("critical_props") or []))
-        props.update(str(x) for x in (scene.get("props_present") or []))
-        props.update(_transfers(scene))
-    return props
+        explicit.update(str(x) for x in (continuity.get("critical_props") or []) if x)
+    return shared | transferred | (explicit & (shared | transferred))
 
 
 def selected_media_usable(media: dict | None, scene_id: str) -> tuple[bool, str | None]:
@@ -365,6 +397,16 @@ def evaluate_junction_qc(
             "vision": None,
         }
 
+    prev_chars = _ids(previous_scene.get("characters"))
+    next_chars = _ids(next_scene.get("characters"))
+    continuing = prev_chars & next_chars
+    same_location = bool(
+        previous_scene.get("location_id")
+        and previous_scene.get("location_id") == next_scene.get("location_id")
+    )
+    critical = _critical_props(previous_scene, next_scene)
+    vision_required = bool(continuing or same_location or critical)
+
     obs = observations
     vision_meta = None
     if isinstance(obs, dict) and (obs.get("provider") or obs.get("model") or obs.get("observed_summary") or obs.get("vision_raw_summary")):
@@ -373,7 +415,7 @@ def evaluate_junction_qc(
             "model": obs.get("model"),
             "raw_summary": obs.get("observed_summary") or obs.get("vision_raw_summary"),
         }
-    if obs is None and callable(vision_fn):
+    if obs is None and callable(vision_fn) and vision_required:
         payload = vision_fn(evidence)
         if isinstance(payload, dict) and any(key in payload for key in VISION_DIMENSIONS):
             obs = payload
@@ -390,13 +432,17 @@ def evaluate_junction_qc(
                 "raw_summary": payload.get("observed_summary"),
             }
 
-    prev_chars = _ids(previous_scene.get("characters"))
-    next_chars = _ids(next_scene.get("characters"))
-    continuing = prev_chars & next_chars
     identity_hard = bool(continuing)
-    next_need_direct = bool(continuing) and previous_scene.get("location_id") == next_scene.get("location_id")
-    critical = _critical_props(previous_scene, next_scene)
+    next_need_direct = bool(continuing) and same_location
     prop_hard = bool(critical)
+    if continuing and same_location:
+        boundary_mode = "continuous"
+    elif continuing:
+        boundary_mode = "location_cut"
+    elif same_location:
+        boundary_mode = "subject_cut"
+    else:
+        boundary_mode = "hard_cut"
     prev_speech = bool(previous_scene.get("dialogue") or previous_scene.get("voiceover"))
     next_speech = bool(next_scene.get("dialogue") or next_scene.get("voiceover"))
     dialogue_hard = prev_speech and next_speech
@@ -452,17 +498,61 @@ def evaluate_junction_qc(
         })
 
     dims = {
-        "identity": _dim(identity_score, IDENTITY_MIN, identity_hard, identity_issue, evidence_of("identity")),
-        "wardrobe": _dim(score_of("wardrobe"), WARDROBE_MIN, False, evidence=evidence_of("wardrobe")),
-        "character_position": _dim(score_of("character_position"), POSITION_MIN, next_need_direct, evidence=evidence_of("character_position")),
-        "body_orientation": _dim(score_of("body_orientation", score_of("character_position")), POSITION_MIN, next_need_direct, evidence=evidence_of("body_orientation")),
-        "prop_owner": _dim(score_of("prop_owner", prop_score), PROP_MIN, False, prop_issue, evidence_of("prop_owner")),
-        "prop_holder": _dim(score_of("prop_holder", prop_score), PROP_MIN, prop_hard, prop_issue, evidence_of("prop_holder")),
-        "prop_state": _dim(prop_score, PROP_MIN, prop_hard, prop_issue, evidence_of("prop_state")),
-        "location_geometry": _dim(score_of("location_geometry"), LOCATION_MIN, False, evidence=evidence_of("location_geometry")),
-        "lighting": _dim(score_of("lighting"), LIGHTING_MIN, False, evidence=evidence_of("lighting")),
-        "motion_direction": _dim(score_of("motion_direction"), MOTION_MIN, False, evidence=evidence_of("motion_direction")),
-        "camera_direction": _dim(score_of("camera_direction"), CAMERA_MIN, False, evidence=evidence_of("camera_direction")),
+        "identity": (
+            _dim(identity_score, IDENTITY_MIN, identity_hard, identity_issue, evidence_of("identity"))
+            if continuing
+            else _not_required_dim(IDENTITY_MIN, "No continuing character across boundary.")
+        ),
+        "wardrobe": (
+            _dim(score_of("wardrobe"), WARDROBE_MIN, False, evidence=evidence_of("wardrobe"))
+            if continuing
+            else _not_required_dim(WARDROBE_MIN, "No continuing character across boundary.")
+        ),
+        "character_position": (
+            _dim(score_of("character_position"), POSITION_MIN, next_need_direct, evidence=evidence_of("character_position"))
+            if next_need_direct
+            else _not_required_dim(POSITION_MIN, "Direct screen-position continuity not required for this cut.")
+        ),
+        "body_orientation": (
+            _dim(score_of("body_orientation", score_of("character_position")), POSITION_MIN, next_need_direct, evidence=evidence_of("body_orientation"))
+            if next_need_direct
+            else _not_required_dim(POSITION_MIN, "Direct body-orientation continuity not required for this cut.")
+        ),
+        "prop_owner": (
+            _dim(score_of("prop_owner", prop_score), PROP_MIN, False, prop_issue, evidence_of("prop_owner"))
+            if prop_hard
+            else _not_required_dim(PROP_MIN, "No prop crosses this boundary.")
+        ),
+        "prop_holder": (
+            _dim(score_of("prop_holder", prop_score), PROP_MIN, True, prop_issue, evidence_of("prop_holder"))
+            if prop_hard
+            else _not_required_dim(PROP_MIN, "No prop crosses this boundary.")
+        ),
+        "prop_state": (
+            _dim(prop_score, PROP_MIN, True, prop_issue, evidence_of("prop_state"))
+            if prop_hard
+            else _not_required_dim(PROP_MIN, "No prop crosses this boundary.")
+        ),
+        "location_geometry": (
+            _dim(score_of("location_geometry"), LOCATION_MIN, False, evidence=evidence_of("location_geometry"))
+            if same_location
+            else _not_required_dim(LOCATION_MIN, "Location changes by script at this cut.")
+        ),
+        "lighting": (
+            _dim(score_of("lighting"), LIGHTING_MIN, False, evidence=evidence_of("lighting"))
+            if same_location
+            else _not_required_dim(LIGHTING_MIN, "Lighting continuity is not direct across a scripted location cut.")
+        ),
+        "motion_direction": (
+            _dim(score_of("motion_direction"), MOTION_MIN, False, evidence=evidence_of("motion_direction"))
+            if next_need_direct
+            else _not_required_dim(MOTION_MIN, "Motion-vector continuity not required for this cut.")
+        ),
+        "camera_direction": (
+            _dim(score_of("camera_direction"), CAMERA_MIN, False, evidence=evidence_of("camera_direction"))
+            if same_location
+            else _not_required_dim(CAMERA_MIN, "Camera-direction continuity not required across a scripted location cut.")
+        ),
         "audio_transition": _dim(audio_obs.get("score"), AUDIO_MIN, False, evidence=audio_obs.get("evidence")),
         "dialogue_transition": dialogue_dim,
     }
@@ -484,6 +574,11 @@ def evaluate_junction_qc(
             continue
         detail = dims[name].get("evidence") or dims[name].get("issue") or name
         issues.append({"type": name, "severity": "critical", "evidence": detail})
+    public_evidence["boundary_mode"] = boundary_mode
+    public_evidence["vision_required"] = vision_required
+    public_evidence["continuing_characters"] = sorted(continuing)
+    public_evidence["boundary_critical_props"] = sorted(critical)
+    public_evidence["same_location"] = same_location
     public_evidence["audio_transition"] = audio_obs
     public_evidence["dialogue_transition"] = dialogue_obs
     if vision_meta:

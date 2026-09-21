@@ -116,6 +116,64 @@ class JunctionVisionTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertTrue({"prop_state", "prop_holder"} & set(report["hard_gate"]["failed"]))
 
+
+    def test_scripted_hard_cut_does_not_require_unrelated_visual_match(self):
+        called = []
+        obs = _pass_obs()
+        for name in (
+            "identity", "wardrobe", "character_position", "body_orientation",
+            "prop_owner", "prop_holder", "prop_state", "location_geometry",
+            "lighting", "motion_direction", "camera_direction",
+        ):
+            obs[name] = {"score": 0, "passed": False, "evidence": "expected visual cut"}
+
+        report = evaluate_junction_qc(
+            {
+                "id": "SCENE_014",
+                "characters": ["CHAR_001"],
+                "location_id": "LOC_001",
+                "props_present": [],
+                "end_state_structured": {"props": {}},
+            },
+            {
+                "id": "SCENE_015",
+                "characters": ["CHAR_002"],
+                "location_id": "LOC_002",
+                "props_present": ["PROP_001", "PROP_002"],
+                "start_state_structured": {
+                    "props": {
+                        "PROP_001": {"state": "open"},
+                        "PROP_002": {"state": "ticking"},
+                    }
+                },
+            },
+            previous_ledger={
+                "accepted_last_frame": str(self.prev_frame),
+                "audio_state": '{"present": true, "non_silent": true, "mean_volume_db": -24.0}',
+            },
+            next_ledger={
+                "accepted_first_frame": str(self.next_frame),
+                "audio_state": '{"present": true, "non_silent": true, "mean_volume_db": -24.0}',
+            },
+            previous_media=self._media("SCENE_014", "m14", self.prev_frame),
+            next_media=self._media("SCENE_015", "m15", self.next_frame),
+            vision_fn=lambda evidence: called.append(evidence) or obs,
+        )
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(called, [])
+        self.assertEqual(report["hard_gate"]["failed"], [])
+        self.assertEqual(report["evidence"]["boundary_mode"], "hard_cut")
+        self.assertFalse(report["evidence"]["vision_required"])
+        self.assertEqual(report["evidence"]["continuing_characters"], [])
+        self.assertEqual(report["evidence"]["boundary_critical_props"], [])
+        self.assertFalse(report["evidence"]["same_location"])
+        self.assertEqual(report["dimensions"]["identity"]["status"], "not_required")
+        self.assertEqual(report["dimensions"]["prop_holder"]["status"], "not_required")
+        self.assertEqual(report["dimensions"]["prop_state"]["status"], "not_required")
+        self.assertEqual(report["dimensions"]["location_geometry"]["status"], "not_required")
+        self.assertEqual(report["dimensions"]["audio_transition"]["status"], "passed")
+
     def test_junction_position_fail(self):
         obs = _pass_obs()
         obs["character_position"] = {"score": 20, "passed": False, "evidence": "jumped sides"}
