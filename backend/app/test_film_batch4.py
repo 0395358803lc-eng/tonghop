@@ -513,7 +513,10 @@ class CapabilityTests(Batch4Case):
 
     def test_refresh_uses_flow_binding_and_rebinds_stale_project(self):
         project = dict(self.project)
-        project["settings"] = {"flow_project_id": "flow-old"}
+        project["settings"] = {
+            "flow_project_id": "flow-old",
+            "flow_model": "__B4_REFRESH_VIDEO__",
+        }
         calls = []
 
         async def fake_video(flow_project_id):
@@ -537,20 +540,92 @@ class CapabilityTests(Batch4Case):
                 "aspect_ratios": ["16:9"],
             }
 
+        async def fake_projects():
+            return {"projects": [{"id": "flow-new"}], "count": 1}
+
         with patch("app.film_store.get_film_project", return_value=project), patch(
             "app.film_store.update_film_project"
         ) as update_project, patch(
             "app.flow_bridge_client.get_flow_video_capabilities", side_effect=fake_video
         ), patch(
             "app.flow_bridge_client.get_flow_image_capabilities", side_effect=fake_image
+        ), patch(
+            "app.flow_bridge_client.get_flow_projects", side_effect=fake_projects
         ):
             result = asyncio.run(refresh_capability_matrix(self.pid))
 
         self.assertEqual(calls[0], ("video", "flow-old"))
-        self.assertIn(("video", None), calls)
+        self.assertIn(("video", "flow-new"), calls)
         self.assertEqual(result.get("flow_project_id"), "flow-new")
         merged = update_project.call_args.kwargs["settings"]
         self.assertEqual(merged.get("flow_project_id"), "flow-new")
+
+    def test_refresh_rebinds_when_stored_workspace_has_empty_models(self):
+        project = dict(self.project)
+        preferred = "Veo 3.1 - Lite [Lower Priority]"
+        project["settings"] = {
+            "flow_project_id": "flow-old",
+            "flow_model": preferred,
+        }
+        calls = []
+
+        async def fake_video(flow_project_id):
+            calls.append(("video", flow_project_id))
+            if flow_project_id == "flow-old":
+                return {
+                    "project_id": "flow-old",
+                    "models": [],
+                    "resolutions": ["720p"],
+                    "durations": [8],
+                    "aspect_ratios": ["16:9"],
+                }
+            return {
+                "project_id": "flow-new",
+                "models": [preferred, "Veo 3.1 - Fast"],
+                "resolutions": ["720p"],
+                "durations": [8],
+                "aspect_ratios": ["16:9"],
+                "max_references": 6,
+            }
+
+        async def fake_image(flow_project_id):
+            return {
+                "project_id": flow_project_id,
+                "models": ["Nano Banana 2"],
+                "aspect_ratios": ["16:9"],
+            }
+
+        async def fake_projects():
+            return {
+                "projects": [{"id": "flow-new"}, {"id": "flow-old"}],
+                "count": 2,
+            }
+
+        with patch("app.film_store.get_film_project", return_value=project), patch(
+            "app.film_store.update_film_project"
+        ) as update_project, patch(
+            "app.flow_bridge_client.get_flow_video_capabilities", side_effect=fake_video
+        ), patch(
+            "app.flow_bridge_client.get_flow_image_capabilities", side_effect=fake_image
+        ), patch(
+            "app.flow_bridge_client.get_flow_projects", side_effect=fake_projects
+        ):
+            result = asyncio.run(refresh_capability_matrix(self.pid))
+
+        self.assertEqual(calls[:2], [("video", "flow-old"), ("video", "flow-new")])
+        self.assertEqual(result.get("flow_project_id"), "flow-new")
+        self.assertTrue(result.get("video"))
+        self.assertNotIn("unknown", [row.get("model") for row in result.get("video") or []])
+        merged = update_project.call_args.kwargs["settings"]
+        self.assertEqual(merged.get("flow_project_id"), "flow-new")
+
+    def test_unknown_only_matrix_is_not_fresh(self):
+        now = datetime.now(timezone.utc).isoformat()
+        with patch(
+            "app.film_capability_matrix.list_capability_matrix",
+            return_value=[{"model": "unknown", "checked_at": now}],
+        ):
+            self.assertFalse(matrix_is_fresh("video"))
 
     def test_stale_capability_refresh(self):
         upsert_capability({

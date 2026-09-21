@@ -129,52 +129,145 @@ def ingest_capability_payload(media_type: str, payload: dict, *, max_references:
     return saved
 
 
+def _payload_models(payload: dict | None) -> list[str]:
+    return [str(item).strip() for item in ((payload or {}).get("models") or []) if str(item).strip()]
+
+
+def _payload_has_preferred_model(payload: dict | None, preferred_model: str | None) -> bool:
+    models = _payload_models(payload)
+    if not models:
+        return False
+    preferred = str(preferred_model or "").strip()
+    if not preferred:
+        return True
+    preferred_canonical = canonical_model_name(preferred) or preferred
+    canonical = {canonical_model_name(item) or item for item in models}
+    return preferred in models or preferred_canonical in canonical
+
+
+def _replace_capability_rows(media_type: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM film_capability_matrix WHERE provider=? AND media_type=?",
+            (PROVIDER, media_type),
+        )
+
+
 async def refresh_capability_matrix(project_id: str | None = None) -> dict:
-    from .flow_bridge_client import get_flow_image_capabilities, get_flow_video_capabilities
+    from .flow_bridge_client import (
+        get_flow_image_capabilities,
+        get_flow_projects,
+        get_flow_video_capabilities,
+    )
 
     flow_project_id = None
+    preferred_model = None
     project = None
     if project_id:
         try:
             from .film_store import get_film_project
             project = get_film_project(project_id)
-            flow_project_id = ((project or {}).get("settings") or {}).get("flow_project_id")
+            settings = (project or {}).get("settings") or {}
+            flow_project_id = settings.get("flow_project_id")
+            preferred_model = settings.get("flow_model")
         except Exception:
             project = None
             flow_project_id = None
+            preferred_model = None
 
-    async def _fetch(target_flow_project_id: str | None):
-        video_payload = await get_flow_video_capabilities(target_flow_project_id)
-        image_payload = await get_flow_image_capabilities(target_flow_project_id)
-        return video_payload or {}, image_payload or {}
+    chosen_id: str | None = None
+    chosen_video: dict | None = None
+    fallback_id: str | None = None
+    fallback_video: dict | None = None
 
-    try:
-        video, image = await _fetch(flow_project_id)
-    except Exception:
-        if not flow_project_id:
-            raise
-        # Stored Flow projects can be deleted/rotated independently from TH Media.
-        # Fall back to the current authenticated workspace instead of treating the
-        # TH Media project id as a Flow project id or leaving the matrix stale.
-        video, image = await _fetch(None)
-
-    effective_flow_project_id = (video or {}).get("project_id") or (image or {}).get("project_id")
-    if project and effective_flow_project_id and effective_flow_project_id != flow_project_id:
+    async def _probe_video(target_flow_project_id: str | None) -> dict | None:
         try:
-            from .film_store import update_film_project
-            merged = dict((project or {}).get("settings") or {})
-            merged["flow_project_id"] = effective_flow_project_id
-            update_film_project(project_id, settings=merged)
-            flow_project_id = effective_flow_project_id
+            payload = await get_flow_video_capabilities(target_flow_project_id)
         except Exception:
-            pass
+            return None
+        payload = payload or {}
+        if not _payload_models(payload):
+            return None
+        return payload
 
-    video_rows = ingest_capability_payload("video", video or {}, max_references=(video or {}).get("max_references") or 6)
-    image_rows = ingest_capability_payload("image", image or {}, max_references=1)
+    # Fast path: keep the stored binding only when it exposes real video models
+    # and, when configured, the requested model family.
+    if flow_project_id:
+        payload = await _probe_video(flow_project_id)
+        if payload:
+            fallback_id = str(payload.get("project_id") or flow_project_id)
+            fallback_video = payload
+            if _payload_has_preferred_model(payload, preferred_model):
+                chosen_id = fallback_id
+                chosen_video = payload
+
+    # A Flow project can remain reachable but stop exposing the requested model.
+    # Treat that as a stale binding, not as a fresh "unknown" capability.
+    if chosen_video is None:
+        try:
+            projects_payload = await get_flow_projects()
+            projects = projects_payload.get("projects") or []
+        except Exception:
+            projects = []
+        seen = {str(flow_project_id)} if flow_project_id else set()
+        for item in projects:
+            candidate_id = str((item or {}).get("id") or "").strip()
+            if not candidate_id or candidate_id in seen:
+                continue
+            seen.add(candidate_id)
+            payload = await _probe_video(candidate_id)
+            if not payload:
+                continue
+            effective_id = str(payload.get("project_id") or candidate_id)
+            if fallback_video is None:
+                fallback_id = effective_id
+                fallback_video = payload
+            if _payload_has_preferred_model(payload, preferred_model):
+                chosen_id = effective_id
+                chosen_video = payload
+                break
+
+    # Last-resort bridge default, useful when project enumeration is temporarily
+    # unavailable. It still must expose at least one real model.
+    if chosen_video is None and fallback_video is None:
+        payload = await _probe_video(None)
+        if payload:
+            fallback_id = str(payload.get("project_id") or "") or None
+            fallback_video = payload
+
+    if chosen_video is None:
+        chosen_id = fallback_id
+        chosen_video = fallback_video
+
+    if not chosen_video or not chosen_id:
+        raise RuntimeError(
+            "CAPABILITY_EMPTY_VIDEO_MODELS: Không tìm thấy Flow workspace nào có video model khả dụng."
+        )
+
+    image = await get_flow_image_capabilities(chosen_id)
+    image = image or {}
+
+    if project and chosen_id != flow_project_id:
+        from .film_store import update_film_project
+        merged = dict((project or {}).get("settings") or {})
+        merged["flow_project_id"] = chosen_id
+        update_film_project(project_id, settings=merged)
+        flow_project_id = chosen_id
+
+    # Refresh is replacement semantics. Keeping a fresh "unknown" row from a
+    # stale workspace can otherwise make readiness incorrectly report fresh.
+    _replace_capability_rows("video")
+    _replace_capability_rows("image")
+    video_rows = ingest_capability_payload(
+        "video",
+        chosen_video,
+        max_references=chosen_video.get("max_references") or 6,
+    )
+    image_rows = ingest_capability_payload("image", image, max_references=1)
     return {
         "provider": PROVIDER,
         "checked_at": _now(),
-        "flow_project_id": flow_project_id or effective_flow_project_id,
+        "flow_project_id": flow_project_id or chosen_id,
         "video": video_rows,
         "image": image_rows,
         "stale": False,
@@ -182,12 +275,17 @@ async def refresh_capability_matrix(project_id: str | None = None) -> dict:
 
 
 def matrix_is_fresh(media_type: str = "video") -> bool:
-    rows = list_capability_matrix(media_type=media_type)
+    rows = [
+        row
+        for row in list_capability_matrix(media_type=media_type)
+        if str(row.get("model") or "").strip().lower() != "unknown"
+    ]
     if not rows:
         return False
-    latest = max((_parse(row.get("checked_at")) for row in rows), default=None)
-    if not latest:
+    stamps = [stamp for stamp in (_parse(row.get("checked_at")) for row in rows) if stamp]
+    if not stamps:
         return False
+    latest = max(stamps)
     return datetime.now(timezone.utc) - latest < STALE_AFTER
 
 
