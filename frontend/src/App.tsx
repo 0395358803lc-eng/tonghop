@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
-import { Bot, CheckCircle2, ChevronDown, Clapperboard, Film, KeyRound, Loader2, MessageSquare, Plus, Send, Settings, Sparkles, Trash2, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Bot, CheckCircle2, ChevronDown, Clapperboard, Film, KeyRound, Loader2, LogIn, MessageSquare, Plus, Save, Send, Settings, Sparkles, Trash2, UserPlus, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from './api'
 import VideoAnalyzer from './VideoAnalyzer'
 import FilmStudio from './FilmStudio'
-import type { Chat, Message, Provider } from './types'
+import type { Chat, FlowMetrics, FlowSavedSession, FlowSessionList, FlowStatus, Message, Provider } from './types'
 import './App.css'
 
 type DraftKeys = Record<string, { key: string; base: string }>
@@ -22,15 +21,41 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [draftKeys, setDraftKeys] = useState<DraftKeys>({})
+  const [flowStatus, setFlowStatus] = useState<FlowStatus | null>(null)
+  const [flowMetrics, setFlowMetrics] = useState<FlowMetrics | null>(null)
+  const [flowAuthenticated, setFlowAuthenticated] = useState<boolean | null>(null)
+  const [flowBridgeUrl, setFlowBridgeUrl] = useState('http://127.0.0.1:8765')
+  const [flowBridgeKey, setFlowBridgeKey] = useState('')
+  const [flowTesting, setFlowTesting] = useState(false)
+  const [flowMessage, setFlowMessage] = useState('')
+  const [flowSessions, setFlowSessions] = useState<FlowSavedSession[]>([])
+  const [flowActiveSessionId, setFlowActiveSessionId] = useState<string>('')
+  const [flowAccount, setFlowAccount] = useState<string>('')
   const [error, setError] = useState('')
   const [appMode, setAppMode] = useState<'chat' | 'video' | 'film'>('chat')
   const [appMenuOpen, setAppMenuOpen] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const flowLoginPollRef = useRef<number | null>(null)
 
   const currentProvider = useMemo(() => providers.find(p => p.id === providerId), [providers, providerId])
 
   const refreshProviders = async () => setProviders(await api.providers())
   const refreshChats = async () => setChats(await api.chats())
+
+  const clearFlowLoginTimer = () => {
+    if (flowLoginPollRef.current !== null) {
+      window.clearInterval(flowLoginPollRef.current)
+      flowLoginPollRef.current = null
+    }
+  }
+
+  const applySessionList = (data: FlowSessionList) => {
+    setFlowSessions(data.sessions || [])
+    setFlowActiveSessionId(data.active_id || '')
+    setFlowAccount(data.active_account || '')
+    if (typeof data.authenticated === 'boolean') setFlowAuthenticated(data.authenticated)
+    if (data.message) setFlowMessage(data.message)
+  }
 
   useEffect(() => {
     Promise.all([api.providers(), api.chats()]).then(([p, c]) => {
@@ -39,6 +64,24 @@ function App() {
       const first = p.find(x => x.configured) || p[0]
       if (first) setProviderId(first.id)
     }).catch(e => setError(e.message))
+  }, [])
+
+  useEffect(() => {
+    api.flowStatus().then(status => {
+      setFlowStatus(status)
+      if (status.bridge_url) setFlowBridgeUrl(status.bridge_url)
+      if (status.configured) {
+        api.flowMetrics().then(setFlowMetrics).catch(() => undefined)
+        api.testFlow().then(result => setFlowAuthenticated(result.authenticated)).catch(() => setFlowAuthenticated(false))
+        api.flowSessions().then(applySessionList).catch(() => undefined)
+      } else {
+        setFlowAuthenticated(null)
+      }
+    }).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    return () => clearFlowLoginTimer()
   }, [])
 
   useEffect(() => {
@@ -155,6 +198,121 @@ function App() {
     setDraftKeys(prev => ({ ...prev, [id]: { key: prev[id]?.key || '', base: prev[id]?.base || '', ...patch } }))
   }
 
+  const saveFlowConnection = async () => {
+    if (!flowBridgeKey.trim()) {
+      setError('Nhập Flow Bridge API key nội bộ trước khi lưu.')
+      return
+    }
+    try {
+      const status = await api.saveFlow(flowBridgeUrl.trim(), flowBridgeKey.trim(), true)
+      setFlowStatus(status)
+      setFlowBridgeKey('')
+      if (status.configured) {
+        setFlowMetrics(await api.flowMetrics())
+        const result = await api.testFlow()
+        setFlowAuthenticated(result.authenticated)
+      }
+      setFlowMessage('Đã lưu Flow Bridge. Phiên Google được giữ trực tiếp trong Chrome profile riêng của Flow.')
+      setError('')
+    } catch (e) { setError((e as Error).message) }
+  }
+
+  const openFlowLogin = async () => {
+    clearFlowLoginTimer()
+    setFlowTesting(true)
+    setFlowMessage('')
+    try {
+      const result = await api.openFlowLogin()
+      setFlowMessage(result.message || 'Đã mở lại Chrome Flow profile. Hoàn tất đăng nhập; ứng dụng sẽ tự phát hiện trạng thái thành công.')
+      setFlowAuthenticated(false)
+      setError('')
+
+      let attempts = 0
+      flowLoginPollRef.current = window.setInterval(async () => {
+        attempts += 1
+        try {
+          const check = await api.testFlow()
+          if (check.authenticated) {
+            clearFlowLoginTimer()
+            setFlowAuthenticated(true)
+            const [status, metrics, sessions] = await Promise.all([
+              api.flowStatus(),
+              api.flowMetrics(),
+              api.flowSessions(),
+            ])
+            setFlowStatus(status)
+            setFlowMetrics(metrics)
+            applySessionList(sessions)
+            setFlowMessage('Đăng nhập Google Flow thành công. Chrome profile hiện tại đã được giữ nguyên và tab Flow đang chạy ẩn trong nền.')
+          } else if (attempts >= 150) {
+            clearFlowLoginTimer()
+            setFlowMessage('Chưa phát hiện đăng nhập Flow sau 5 phút. Bấm Đăng nhập để mở lại đúng tab hiện tại và tiếp tục.')
+          }
+        } catch {
+          if (attempts >= 150) clearFlowLoginTimer()
+        }
+      }, 2000)
+    } catch (e) { setError((e as Error).message) }
+    finally { setFlowTesting(false) }
+  }
+
+  const testFlowConnection = async () => {
+    setFlowTesting(true)
+    setFlowMessage('')
+    try {
+      const result = await api.testFlow()
+      setFlowAuthenticated(result.authenticated)
+      setFlowMessage(result.authenticated ? 'Flow Bridge hoạt động và Chrome profile đang giữ phiên Flow.' : 'Flow cần đăng nhập lại. Bấm Đăng nhập, đăng nhập trong Chrome rồi bấm Kiểm tra.')
+      setFlowStatus(await api.flowStatus())
+      setFlowMetrics(await api.flowMetrics())
+      applySessionList(await api.flowSessions())
+    } catch (e) { setError((e as Error).message) }
+    finally { setFlowTesting(false) }
+  }
+
+  const saveFlowSession = async () => {
+    setFlowTesting(true)
+    setFlowMessage('')
+    try {
+      const data = await api.saveFlowSession()
+      applySessionList(data)
+      setError('')
+    } catch (e) { setError((e as Error).message) }
+    finally { setFlowTesting(false) }
+  }
+
+  const startNewFlowSession = async () => {
+    setFlowTesting(true)
+    setFlowMessage('')
+    try {
+      const data = await api.newFlowSession(true)
+      applySessionList(data)
+      setFlowAuthenticated(false)
+      setError('')
+    } catch (e) { setError((e as Error).message) }
+    finally { setFlowTesting(false) }
+  }
+
+  const switchFlowSession = async (sessionId: string) => {
+    if (!sessionId || sessionId === flowActiveSessionId) return
+    setFlowTesting(true)
+    setFlowMessage('')
+    try {
+      const data = await api.restoreFlowSession(sessionId)
+      applySessionList(data)
+      setError('')
+    } catch (e) { setError((e as Error).message) }
+    finally { setFlowTesting(false) }
+  }
+
+  const disconnectFlow = async () => {
+    await api.removeFlow()
+    setFlowStatus(await api.flowStatus())
+    setFlowMetrics(null)
+    setFlowAuthenticated(null)
+    setFlowMessage('Đã gỡ cấu hình bridge khỏi TH Media; browser profile không bị xóa.')
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -223,6 +381,57 @@ function App() {
               </select>
             </label>
           </div>
+          <div className={`flow-account ${flowAuthenticated ? 'ready' : flowStatus?.configured ? 'need-login' : ''}`}>
+            <span>Google Flow</span>
+            <div className="flow-account-row">
+              <b title={flowMessage || undefined}>
+                {!flowStatus?.configured
+                  ? 'Chưa cấu hình bridge'
+                  : flowAuthenticated === true
+                    ? (flowAccount || 'Đã đăng nhập')
+                    : flowAuthenticated === false
+                      ? (flowAccount ? `Chưa mở phiên · ${flowAccount}` : 'Cần đăng nhập')
+                      : (flowAccount || 'Đang kiểm tra phiên')}
+              </b>
+              {flowSessions.length > 0 && (
+                <select
+                  value={flowActiveSessionId}
+                  disabled={flowTesting || !flowStatus?.configured}
+                  onChange={e => switchFlowSession(e.target.value)}
+                  title="Chuyển phiên đã lưu"
+                >
+                  <option value="">Phiên hiện tại</option>
+                  {flowSessions.map(session => (
+                    <option key={session.id} value={session.id}>{session.name}{session.account_hint && session.account_hint !== session.name ? ` · ${session.account_hint}` : ''}</option>
+                  ))}
+                </select>
+              )}
+              <button disabled={!flowStatus?.configured || flowTesting} onClick={saveFlowSession} title="Lưu phiên Google hiện tại">
+                {flowTesting ? <Loader2 className="spin" size={12} /> : <Save size={12} />}
+                Lưu phiên
+              </button>
+              <button disabled={!flowStatus?.configured || flowTesting} onClick={startNewFlowSession} title="Mở phiên trống để đăng nhập tài khoản khác">
+                <UserPlus size={12} />
+                Phiên mới
+              </button>
+              <button
+                disabled={flowTesting}
+                onClick={() => {
+                  if (!flowStatus?.configured) {
+                    setSettingsOpen(true)
+                    return
+                  }
+                  openFlowLogin()
+                }}
+              >
+                <LogIn size={12} />
+                Đăng nhập
+              </button>
+              <button disabled={!flowStatus?.configured || flowTesting} onClick={testFlowConnection}>
+                Kiểm tra
+              </button>
+            </div>
+          </div>
           <div className={`provider-status ${currentProvider?.configured ? 'ready' : ''}`}>
             {currentProvider?.configured ? <CheckCircle2 size={15} /> : <KeyRound size={15} />}
             {currentProvider?.configured ? 'API sẵn sàng' : 'Chưa có API key'}
@@ -284,28 +493,86 @@ function App() {
         <div className="modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>
           <div className="settings-modal" onMouseDown={e => e.stopPropagation()}>
             <div className="settings-head">
-              <div><span className="eyebrow">KẾT NỐI MODEL</span><h2>Nhà cung cấp AI</h2><p>Khóa API chỉ được gửi đến backend và mã hóa trước khi lưu.</p></div>
-              <button className="icon-button" onClick={() => setSettingsOpen(false)}><X size={20} /></button>
+              <div>
+                <span className="eyebrow">KẾT NỐI</span>
+                <h2>Nhà cung cấp AI</h2>
+                <p>Khóa API được mã hóa trên server. Đăng nhập Google Flow ở thanh trên.</p>
+              </div>
+              <div className="settings-head-meta">
+                <span>{providers.filter(p => p.configured).length}/{providers.length} model</span>
+                <span className={flowStatus?.configured ? 'on' : ''}>{flowStatus?.configured ? 'Flow sẵn sàng' : 'Flow chưa gắn'}</span>
+                <button className="icon-button" onClick={() => setSettingsOpen(false)}><X size={18} /></button>
+              </div>
             </div>
-            <div className="provider-grid">
-              {providers.map(provider => {
-                const draft = draftKeys[provider.id] || { key: '', base: '' }
-                return (
-                  <div className="provider-card" key={provider.id} style={{ '--accent': provider.accent } as React.CSSProperties}>
-                    <div className="provider-card-head">
-                      <div className="provider-logo">{provider.name.slice(0, 1)}</div>
-                      <div><strong>{provider.name}</strong><span>{provider.configured ? provider.masked_key : 'Chưa kết nối'}</span></div>
-                      <div className={`dot ${provider.configured ? 'online' : ''}`} />
+            <div className="settings-body">
+              <section className="settings-section">
+                <div className="settings-section-title">
+                  <strong>Model AI</strong>
+                  <em>Dùng cho chat, phân tích video và kiểm tra kịch bản</em>
+                </div>
+                <div className="provider-list">
+                  {providers.map(provider => {
+                    const draft = draftKeys[provider.id] || { key: '', base: '' }
+                    return (
+                      <article className={`provider-row ${provider.configured ? 'connected' : ''}`} key={provider.id} style={{ '--accent': provider.accent } as React.CSSProperties}>
+                        <div className="provider-row-head">
+                          <div className="provider-logo">{provider.name.slice(0, 1)}</div>
+                          <div className="provider-row-copy">
+                            <strong>{provider.name}</strong>
+                            <span>{provider.configured ? provider.masked_key : 'Chưa kết nối'}</span>
+                          </div>
+                          <b className={`status-pill ${provider.configured ? 'on' : ''}`}>{provider.configured ? 'Đã kết nối' : 'Trống'}</b>
+                        </div>
+                        <div className="provider-row-fields">
+                          <label>
+                            API key
+                            <input type="password" value={draft.key} onChange={e => updateDraft(provider.id, { key: e.target.value })} placeholder={provider.configured ? 'Nhập khóa mới để thay thế' : 'Nhập API key'} />
+                          </label>
+                          <div className="provider-row-actions">
+                            <button className="save-key" onClick={() => saveProvider(provider)}>Lưu</button>
+                            {provider.configured && <button className="disconnect" onClick={() => disconnectProvider(provider)}>Gỡ</button>}
+                          </div>
+                        </div>
+                        <details className="provider-advanced">
+                          <summary>Base URL tùy chọn</summary>
+                          <input value={draft.base} onChange={e => updateDraft(provider.id, { base: e.target.value })} placeholder={provider.custom_base_url || provider.base_url} />
+                        </details>
+                      </article>
+                    )
+                  })}
+                </div>
+              </section>
+              <section className="settings-section">
+                <div className="settings-section-title">
+                  <strong>Google Flow</strong>
+                  <em>Cầu nối kỹ thuật. Đăng nhập tài khoản ở thanh trên, cạnh ô model.</em>
+                </div>
+                <article className={`provider-row flow-row ${flowStatus?.configured ? 'connected' : ''}`} style={{ '--accent': '#4285f4' } as React.CSSProperties}>
+                  <div className="provider-row-head">
+                    <div className="provider-logo">F</div>
+                    <div className="provider-row-copy">
+                      <strong>Flow Session Bridge</strong>
+                      <span>{flowStatus?.configured ? flowStatus.masked_key : 'Chưa cấu hình bridge'}</span>
                     </div>
-                    <label>API key<input type="password" value={draft.key} onChange={e => updateDraft(provider.id, { key: e.target.value })} placeholder={provider.configured ? 'Nhập khóa mới để thay thế' : 'Nhập API key'} /></label>
-                    <label>Base URL tùy chỉnh <em>không bắt buộc</em><input value={draft.base} onChange={e => updateDraft(provider.id, { base: e.target.value })} placeholder={provider.custom_base_url || provider.base_url} /></label>
-                    <div className="provider-actions">
-                      <button className="save-key" onClick={() => saveProvider(provider)}>Lưu kết nối</button>
-                      {provider.configured && <button className="disconnect" onClick={() => disconnectProvider(provider)}>Gỡ khóa</button>}
-                    </div>
+                    <b className={`status-pill ${flowStatus?.configured ? 'on' : ''}`}>{flowStatus?.configured ? 'Sẵn sàng' : 'Trống'}</b>
                   </div>
-                )
-              })}
+                  <div className="provider-row-fields two">
+                    <label>Bridge URL<input value={flowBridgeUrl} onChange={e => setFlowBridgeUrl(e.target.value)} placeholder="http://127.0.0.1:8765" /></label>
+                    <label>Bridge API key<input type="password" value={flowBridgeKey} onChange={e => setFlowBridgeKey(e.target.value)} placeholder={flowStatus?.configured ? 'Nhập khóa mới để thay thế' : 'thflow_...'} /></label>
+                  </div>
+                  {flowMetrics && (
+                    <div className="flow-metric-chips">
+                      <span>{flowMetrics.jobs_total} jobs</span>
+                      <span>{flowMetrics.active_jobs} đang chạy</span>
+                      <span>{flowMetrics.video_files} video · {Math.round(flowMetrics.video_bytes / 1024 / 1024 * 10) / 10} MB</span>
+                    </div>
+                  )}
+                  <div className="provider-row-actions">
+                    <button className="save-key" onClick={saveFlowConnection}>Lưu bridge</button>
+                    {flowStatus?.configured && <button className="disconnect" onClick={disconnectFlow}>Gỡ bridge</button>}
+                  </div>
+                </article>
+              </section>
             </div>
           </div>
         </div>

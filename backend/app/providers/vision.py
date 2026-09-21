@@ -22,6 +22,16 @@ def _compatible_text(data: dict) -> str:
     return str(content or "").strip()
 
 
+def _image_label(image: dict) -> str:
+    label = str(image.get("label") or "").strip()
+    if label:
+        return label
+    try:
+        return f"Frame tại {float(image.get('timestamp') or 0):.1f} giây"
+    except Exception:
+        return "Hình ảnh tham chiếu"
+
+
 async def run_vision(provider: str, api_key: str, base_url: str | None, model: str, prompt: str, images: list[dict]) -> str:
     cfg = PROVIDERS[provider]
     base = (base_url or cfg["base_url"]).rstrip("/")
@@ -31,7 +41,7 @@ async def run_vision(provider: str, api_key: str, base_url: str | None, model: s
         if kind == "openai":
             content = [{"type": "input_text", "text": prompt}]
             for image in images:
-                content.append({"type": "input_text", "text": f"Frame tại {image['timestamp']:.1f} giây:"})
+                content.append({"type": "input_text", "text": _image_label(image) + ":"})
                 content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{image['data']}"})
             response = await client.post(f"{base}/responses", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json={"model": model, "input": [{"role": "user", "content": content}]})
             response.raise_for_status()
@@ -40,7 +50,7 @@ async def run_vision(provider: str, api_key: str, base_url: str | None, model: s
         if kind == "anthropic":
             content = [{"type": "text", "text": prompt}]
             for image in images:
-                content.append({"type": "text", "text": f"Frame tại {image['timestamp']:.1f} giây:"})
+                content.append({"type": "text", "text": _image_label(image) + ":"})
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image["data"]}})
             response = await client.post(f"{base}/v1/messages", headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}, json={"model": model, "max_tokens": 5000, "messages": [{"role": "user", "content": content}]})
             response.raise_for_status()
@@ -50,7 +60,7 @@ async def run_vision(provider: str, api_key: str, base_url: str | None, model: s
         if kind == "gemini":
             parts = [{"text": prompt}]
             for image in images:
-                parts.append({"text": f"Frame tại {image['timestamp']:.1f} giây:"})
+                parts.append({"text": _image_label(image) + ":"})
                 parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image["data"]}})
             clean_model = model.removeprefix("models/")
             response = await client.post(f"{base}/v1beta/models/{quote(clean_model, safe='')}:generateContent", headers={"x-goog-api-key": api_key, "Content-Type": "application/json"}, json={"contents": [{"role": "user", "parts": parts}]})
@@ -63,7 +73,7 @@ async def run_vision(provider: str, api_key: str, base_url: str | None, model: s
 
         content = [{"type": "text", "text": prompt}]
         for image in images:
-            content.append({"type": "text", "text": f"Frame tại {image['timestamp']:.1f} giây:"})
+            content.append({"type": "text", "text": _image_label(image) + ":"})
             content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image['data']}", "detail": "low"}})
         response = await client.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json={"model": model, "messages": [{"role": "user", "content": content}], "stream": False})
         response.raise_for_status()

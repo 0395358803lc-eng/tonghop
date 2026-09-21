@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, BookOpen, CheckCircle2, Clapperboard, Download, Film, Loader2, LockKeyhole, MapPin, Pause, Play, Plus, RotateCcw, Save, Sparkles, Trash2, WandSparkles } from 'lucide-react'
 import { api } from './api'
-import type { FilmProject, FilmProjectSummary, FilmRenderStatus, FilmScene, FilmSettings, Provider } from './types'
+import FilmContinuityControlCenter from './FilmContinuityControlCenter'
+import FilmMediaGallery from './FilmMediaGallery'
+import FilmSceneMedia from './FilmSceneMedia'
+import { adapterNameVi, errorCodeVi, FILM_STYLE_OPTIONS, filmStatusVi, jsonTextVi, qcStatusVi, renderStatusVi, stageVi, styleLabelVi, uiErrorVi } from './filmVi'
+import type { FilmGeneratedMedia, FilmProject, FilmProjectSummary, FilmProviderResource, FilmRenderJob, FilmRenderStatus, FilmScene, FilmSettings, FlowImageCapabilities, FlowProject, FlowVideoCapabilities, Provider } from './types'
 
 type Props = {
   providerId: string
@@ -18,9 +22,45 @@ const DEFAULT_SETTINGS: FilmSettings = {
   character_lock: true,
   location_lock: true,
   auto_continuity: true,
+  require_provider_assets: true,
 }
 
-const jsonText = (value: unknown) => JSON.stringify(value ?? {}, null, 2)
+const audioQcSummary = (job: FilmRenderJob) => {
+  const audio = (job.qc?.audio_check || null) as Record<string, unknown> | null
+  if (!audio) return ''
+  const present = audio.present === true
+  const nonSilent = audio.non_silent === true
+  const peak = typeof audio.max_volume_db === 'number' ? ' · mức đỉnh ' + audio.max_volume_db + ' dB' : ''
+  return 'Âm thanh: ' + (present ? 'Có' : 'Không có') + ' · ' + (nonSilent ? 'Có tín hiệu âm thanh' : 'Im lặng') + peak
+}
+
+const speechQcSummary = (job: FilmRenderJob) => {
+  const speech = (job.qc?.speech_check || null) as Record<string, unknown> | null
+  if (!speech) return ''
+  const passed = speech.passed === true
+  const score = typeof speech.match_score === 'number' ? ' · ' + Math.round(speech.match_score * 100) + '%' : ''
+  const transcript = typeof speech.transcript === 'string' ? speech.transcript.trim() : ''
+  const clipped = transcript.length > 90 ? transcript.slice(0, 87) + '...' : transcript
+  return 'Lời thoại: ' + (passed ? 'Đạt' : 'Không đạt') + score + (clipped ? ' · ' + clipped : '')
+}
+
+const visualQcSummary = (job: FilmRenderJob) => {
+  const gate = (job.qc?.hard_gate || null) as Record<string, unknown> | null
+  const dimensions = (gate?.dimensions || null) as Record<string, Record<string, unknown>> | null
+  if (!dimensions) return ''
+  const names: Record<string, string> = {
+    identity: 'Nhân vật',
+    wardrobe: 'Trang phục',
+    location: 'Bối cảnh',
+    prop: 'Đạo cụ',
+    boundary: 'Nối cảnh',
+  }
+  const parts = Object.entries(dimensions).map(([key, value]) => {
+    const score = typeof value.score === 'number' ? Math.round(value.score) : '?'
+    return `${names[key] || key}: ${score}/100${value.passed === true ? ' ✓' : ' ✕'}`
+  })
+  return 'Visual Lock: ' + parts.join(' · ')
+}
 
 export default function FilmStudio({ providerId, model, provider, onOpenSettings }: Props) {
   const [projects, setProjects] = useState<FilmProjectSummary[]>([])
@@ -35,13 +75,90 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   const [draft, setDraft] = useState<Partial<FilmScene>>({})
   const [dialogueText, setDialogueText] = useState('[]')
   const [renderState, setRenderState] = useState<FilmRenderStatus | null>(null)
+  const [resources, setResources] = useState<FilmProviderResource[]>([])
+  const [resourceBusy, setResourceBusy] = useState<string>('')
   const [renderBusy, setRenderBusy] = useState(false)
+  const [productionBusy, setProductionBusy] = useState(false)
+  const [consistencyBusy, setConsistencyBusy] = useState(false)
   const [selectedForRender, setSelectedForRender] = useState<string[]>([])
+  const [flowProjects, setFlowProjects] = useState<FlowProject[]>([])
+  const [flowCaps, setFlowCaps] = useState<FlowVideoCapabilities | null>(null)
+  const [flowImageCaps, setFlowImageCaps] = useState<FlowImageCapabilities | null>(null)
+  const [canonicalProvider, setCanonicalProvider] = useState<'flow' | 'xkiro'>('flow')
+  const [canonicalModel, setCanonicalModel] = useState('Nano Banana 2')
+  const [flowLoading, setFlowLoading] = useState(false)
+  const [flowAuthenticated, setFlowAuthenticated] = useState<boolean | null>(null)
+  const [flowSessionHint, setFlowSessionHint] = useState('')
+  const [mediaItems, setMediaItems] = useState<FilmGeneratedMedia[]>([])
 
   const refreshProjects = async () => setProjects(await api.filmProjects())
   const refreshRender = async (projectId: string) => { const state = await api.filmRenderStatus(projectId); setRenderState(state); return state }
+  const refreshResources = async (projectId: string) => {
+    const data = await api.syncFilmResources(projectId)
+    setResources(data.resources || [])
+    return data.resources || []
+  }
+  const refreshMedia = async (projectId: string) => {
+    const data = await api.filmMedia(projectId)
+    setMediaItems(data.media || [])
+    return data.media || []
+  }
 
   useEffect(() => { refreshProjects().catch(() => undefined) }, [])
+
+  const refreshFlowProduction = async (projectId?: string | null) => {
+    setFlowLoading(true)
+    try {
+      const session = await api.testFlow()
+      setFlowAuthenticated(session.authenticated)
+      const sessionUrl = String((session.session as Record<string, unknown> | undefined)?.url || '')
+      if (!session.authenticated) {
+        setFlowProjects([])
+        setFlowCaps(null)
+        setFlowImageCaps(null)
+        setFlowSessionHint(
+          sessionUrl.includes('accounts.google.com')
+            ? 'Cửa sổ Chrome đang ở trang đăng nhập Google. Hãy hoàn tất đăng nhập, rồi bấm Làm mới danh sách mô hình.'
+            : sessionUrl.includes('/about')
+              ? 'Chrome mới mở trang giới thiệu Flow, chưa vào workspace. Bấm Mở đăng nhập để vào tài khoản.'
+              : 'Phiên Flow chưa sẵn sàng. Bấm Mở đăng nhập, đăng nhập Google, rồi tải lại mô hình.'
+        )
+        return false
+      }
+      setFlowSessionHint('')
+      const projectsData = await api.flowProjects()
+      const imageCaps = await api.flowImageCapabilities(projectId || undefined)
+      const caps = await api.flowVideoCapabilities(projectId || undefined)
+      setFlowProjects(projectsData.projects)
+      setFlowImageCaps(imageCaps)
+      setFlowCaps(caps)
+      if (canonicalProvider === 'flow' && imageCaps.models.length && !imageCaps.models.includes(canonicalModel)) {
+        setCanonicalModel(imageCaps.models.includes('Nano Banana 2') ? 'Nano Banana 2' : imageCaps.models[0])
+      }
+      return true
+    } catch {
+      setFlowAuthenticated(false)
+      setFlowProjects([])
+      setFlowCaps(null)
+      setFlowImageCaps(null)
+      setFlowSessionHint('Không kết nối được Chrome Flow. Bấm Mở đăng nhập để khởi động lại phiên.')
+      return false
+    } finally {
+      setFlowLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    refreshFlowProduction(settings.flow_project_id).catch(() => undefined)
+  }, [settings.flow_project_id])
+
+  useEffect(() => {
+    if (flowAuthenticated !== false) return
+    const timer = window.setInterval(() => {
+      refreshFlowProduction(settings.flow_project_id).catch(() => undefined)
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [flowAuthenticated, settings.flow_project_id])
 
   useEffect(() => {
     if (!active || !['queued', 'analyzing'].includes(active.status)) return
@@ -52,9 +169,15 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
         if (next.status === 'ready' && next.scenes.length) setActiveSceneId(prev => prev || next.scenes[0].id)
         if (next.status === 'failed') setError(next.error || 'Phân tích dự án thất bại')
         if (['ready', 'failed'].includes(next.status)) await refreshProjects()
-      } catch (e) { setError((e as Error).message) }
+      } catch (e) { setError(uiErrorVi((e as Error).message)) }
     }, 1800)
     return () => window.clearInterval(timer)
+  }, [active?.id, active?.status])
+
+  useEffect(() => {
+    if (!active || active.status !== 'ready') return
+    refreshResources(active.id).catch(() => undefined)
+    refreshMedia(active.id).catch(() => undefined)
   }, [active?.id, active?.status])
 
   useEffect(() => {
@@ -62,30 +185,114 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     let cancelled = false
     const sync = async () => {
       try {
-        const state = await api.filmRenderStatus(active.id)
-        if (cancelled) return
+        const [state, resourceData] = await Promise.all([
+          api.filmRenderStatus(active.id),
+          api.filmResources(active.id),
+        ])
+        if (cancelled) return false
         setRenderState(state)
+        setResources(resourceData.resources || [])
+        const mediaBusy = (resourceData.resources || []).some(item => ['queued', 'generating', 'regenerating'].includes(String(item.metadata?.generation_status || '')) || String(item.metadata?.canonical_qc_status || '') === 'running') || state.jobs.some(job => ['waiting', 'preparing', 'generating'].includes(job.status))
+        await refreshMedia(active.id)
         if (state.jobs.some(job => ['preparing', 'generating', 'completed', 'failed'].includes(job.status))) {
           const project = await api.filmProject(active.id)
           if (!cancelled) setActive(project)
         }
-      } catch (e) { if (!cancelled) setError((e as Error).message) }
+        return mediaBusy || resourceBusy || renderBusy
+      } catch (e) {
+        if (!cancelled) setError(uiErrorVi((e as Error).message))
+        return false
+      }
     }
-    sync()
-    const timer = window.setInterval(sync, 2200)
-    return () => { cancelled = true; window.clearInterval(timer) }
-  }, [active?.id, active?.status])
+    let timer: number | undefined
+    const tick = async () => {
+      const busy = await sync()
+      if (!cancelled && busy) timer = window.setTimeout(tick, 2200)
+    }
+    tick()
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer) }
+  }, [active?.id, active?.status, resourceBusy, renderBusy])
 
   const selectedScene = useMemo(
     () => active?.scenes.find(scene => scene.id === activeSceneId) || active?.scenes[0] || null,
     [active, activeSceneId],
   )
+  const consistencyReady = active?.consistency_report?.final_gate === true
+  const consistencyStatus = active?.consistency_report?.status || 'CHƯA KIỂM TRA'
+  const consistencyIssues = [
+    ...(active?.consistency_report?.effective_errors || []),
+    ...(active?.consistency_report?.review_items || []),
+  ]
+  const productionGateReady = active?.production_gate?.final_gate === true
+  const productionReady = consistencyReady && productionGateReady
+  const productionErrors = active?.production_gate?.errors || []
+  const visualAssetsRequired = renderState?.adapter.id === 'flow_bridge' || settings.require_provider_assets === true
+  const canonicalGenerating = resources.some(item => ['queued', 'generating', 'regenerating'].includes(String(item.metadata?.generation_status || '')))
+  const canonicalQcRunning = resources.some(item => String(item.metadata?.canonical_qc_status || '') === 'running')
+  const canonicalProviderReady = canonicalProvider === 'xkiro' || flowAuthenticated === true
+  const activeCanonicalResources = resources.filter(item => item.status !== 'retired')
+  const canonicalReady = activeCanonicalResources.length > 0
+    && activeCanonicalResources.every(item => {
+      const qc = item.metadata?.canonical_qc as Record<string, unknown> | undefined
+      const gate = qc?.hard_gate as Record<string, unknown> | undefined
+      return ['ready', 'locked'].includes(item.status) && gate?.passed === true
+    })
+  const renderGateReady = productionReady && (!visualAssetsRequired || canonicalReady)
 
   const latestRenderByScene = useMemo(() => {
     const map = new Map<string, NonNullable<FilmRenderStatus['jobs']>[number]>()
     for (const job of renderState?.jobs || []) map.set(job.scene_id, job)
     return map
   }, [renderState])
+  const galleryItems = useMemo(() => {
+    if (!active) return mediaItems
+    const live: FilmGeneratedMedia[] = []
+    for (const job of renderState?.jobs || []) {
+      if (!['waiting', 'preparing', 'generating', 'failed'].includes(job.status)) continue
+      const hasFile = mediaItems.some(item => item.scene_id === job.scene_id && item.file_url)
+      if (job.status === 'failed' && hasFile) continue
+      if (['waiting', 'preparing', 'generating'].includes(job.status) && hasFile) continue
+      live.push({
+        id: `live-job-${job.id}`,
+        project_id: active.id,
+        scene_id: job.scene_id,
+        output_key: `scene_video:${job.scene_id}`,
+        media_type: 'video',
+        role: 'scene_video',
+        status: job.status === 'failed' ? 'failed' : 'processing',
+        version: 0,
+        is_selected: false,
+        qc_status: job.qc_status || 'pending',
+        qc: job.qc || {},
+        metadata: { progress: job.progress, error: job.error || '' },
+        created_at: job.created_at,
+        updated_at: job.updated_at,
+      })
+    }
+    for (const resource of resources) {
+      const gen = String(resource.metadata?.generation_status || '')
+      if (!['queued', 'generating', 'regenerating'].includes(gen)) continue
+      if (mediaItems.some(item => item.entity_id === resource.entity_id && item.file_url)) continue
+      live.push({
+        id: `live-res-${resource.id}`,
+        project_id: active.id,
+        resource_type: resource.resource_type,
+        entity_id: resource.entity_id,
+        output_key: `canonical:${resource.resource_type}:${resource.entity_id}`,
+        media_type: 'image',
+        role: 'canonical_image',
+        status: 'processing',
+        version: 0,
+        is_selected: false,
+        qc_status: String(resource.metadata?.canonical_qc_status || 'pending'),
+        qc: {},
+        metadata: {},
+        created_at: resource.created_at,
+        updated_at: resource.updated_at,
+      })
+    }
+    return [...live, ...mediaItems]
+  }, [active, mediaItems, renderState, resources])
 
   useEffect(() => {
     if (!selectedScene) return
@@ -107,7 +314,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       const queued = await api.analyzeFilmProject(created.id)
       setActive(queued)
       await refreshProjects()
-    } catch (e) { setError((e as Error).message) }
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
     finally { setCreating(false) }
   }
 
@@ -119,8 +326,9 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       setStory(project.original_text)
       setName(project.name)
       setActiveSceneId(project.scenes[0]?.id || null)
+      if (project.status === 'ready') await refreshResources(project.id)
       setError('')
-    } catch (e) { setError((e as Error).message) }
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
   }
 
   const newProject = () => {
@@ -130,6 +338,9 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     setName('')
     setSettings(DEFAULT_SETTINGS)
     setRenderState(null)
+    setResources([])
+    setMediaItems([])
+    setResourceBusy('')
     setSelectedForRender([])
     setError('')
   }
@@ -140,27 +351,92 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     await refreshProjects()
   }
 
+  const saveActiveSettings = async (patch: Partial<FilmSettings>) => {
+    if (!active) return
+    const next = { ...settings, ...patch }
+    setSettings(next)
+    try {
+      const updated = await api.updateFilmProject(active.id, { settings: next })
+      setActive(updated)
+      setError('')
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
+  }
+
   const setField = (key: keyof FilmScene, value: unknown) => setDraft(prev => ({ ...prev, [key]: value }))
 
   const saveScene = async () => {
     if (!active || !selectedScene) return
     try {
       let dialogue = selectedScene.dialogue || []
-      try { dialogue = JSON.parse(dialogueText) } catch { throw new Error('Dialogue phải là JSON hợp lệ') }
+      try { dialogue = JSON.parse(dialogueText) } catch { throw new Error('Lời thoại phải có định dạng JSON hợp lệ') }
       const updated = await api.updateFilmScene(active.id, selectedScene.id, { ...draft, dialogue })
       setActive(updated)
       setDraft({})
       setError('')
-    } catch (e) { setError((e as Error).message) }
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
   }
 
   const checkContinuity = async () => {
-    if (!active) return
+    if (!active || consistencyBusy) return
+    setConsistencyBusy(true)
+    setError('')
     try {
       const updated = await api.checkFilmContinuity(active.id)
       setActive(updated)
-      setError('')
-    } catch (e) { setError((e as Error).message) }
+      const report = updated.consistency_report
+      if (!report?.final_gate) {
+        const first = report?.effective_errors?.[0] || report?.review_items?.[0]
+        setError(first?.detail || (report?.status === 'REPAIRABLE'
+          ? 'Phát hiện lỗi nhất quán có thể tự động sửa.'
+          : 'Kiểm tra tính nhất quán chưa đạt. Hãy xem báo cáo chi tiết.'))
+      }
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
+    finally { setConsistencyBusy(false) }
+  }
+
+  const repairConsistency = async () => {
+    if (!active || consistencyBusy) return
+    setConsistencyBusy(true)
+    setError('')
+    try {
+      const result = await api.repairFilmConsistency(active.id)
+      setActive(result.project)
+      if (!result.consistency_report?.final_gate) {
+        const first = result.consistency_report?.effective_errors?.[0] || result.consistency_report?.review_items?.[0]
+        setError(first?.detail || 'Đã sửa dữ liệu có thể sửa tự động nhưng vẫn còn mục cần kiểm tra.')
+      }
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
+    finally { setConsistencyBusy(false) }
+  }
+
+  const runProductionGate = async () => {
+    if (!active || productionBusy) return
+    setProductionBusy(true)
+    setError('')
+    try {
+      const result = await api.runFilmProductionGate(active.id)
+      setActive(result.project)
+      if (!result.production_gate.final_gate) {
+        const first = result.production_gate.errors?.[0]
+        setError(first?.code ? errorCodeVi(first.code, first.detail) : 'Kiểm tra trước khi tạo video chưa đạt.')
+      }
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
+    finally { setProductionBusy(false) }
+  }
+
+  const autoRepairDerived = async () => {
+    if (!active || productionBusy) return
+    setProductionBusy(true)
+    setError('')
+    try {
+      const updated = await api.autoRepairFilm(active.id)
+      setActive(updated)
+      if (!updated.production_gate?.final_gate) {
+        const first = updated.production_gate?.errors?.[0]
+        setError(first?.code ? errorCodeVi(first.code, first.detail) : 'Tự động sửa đã hoàn tất nhưng dự án vẫn chưa đủ điều kiện tạo video.')
+      }
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
+    finally { setProductionBusy(false) }
   }
 
   const toggleRenderSelection = (sceneId: string) => {
@@ -169,6 +445,12 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
 
   const queueRender = async (sceneIds: string[]) => {
     if (!active || !sceneIds.length || renderBusy) return
+    if (!renderGateReady) {
+      setError(!productionReady
+        ? 'Dự án chưa đạt kiểm tra trước khi tạo video. Hãy kiểm tra toàn bộ hoặc tự động sửa dữ liệu phát sinh trước khi tạo video.'
+        : 'Canonical Visual QC chưa đạt cho toàn bộ tài nguyên bắt buộc. Hãy chạy QC + tự sửa trước khi tạo video.')
+      return
+    }
     setRenderBusy(true)
     setError('')
     try {
@@ -176,37 +458,65 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       setRenderState(state)
       setSelectedForRender([])
       setActive(await api.filmProject(active.id))
-      if (!state.adapter.configured) setError('Đã tạo Render Queue nhưng chưa có Video Render Adapter thật. Job sẽ giữ ở Waiting cho đến khi adapter được cấu hình.')
-    } catch (e) { setError((e as Error).message) }
+      if (!state.adapter.configured) setError('Đã tạo hàng đợi nhưng chưa có bộ máy tạo video thật. Tác vụ sẽ giữ ở trạng thái Đang chờ cho đến khi dịch vụ được cấu hình.')
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
     finally { setRenderBusy(false) }
   }
 
   const pauseRender = async () => {
     if (!active) return
-    try { setRenderState(await api.pauseFilmRender(active.id)); setError('') } catch (e) { setError((e as Error).message) }
+    try { setRenderState(await api.pauseFilmRender(active.id)); setError('') } catch (e) { setError(uiErrorVi((e as Error).message)) }
   }
 
   const resumeRender = async () => {
     if (!active) return
-    try { setRenderState(await api.resumeFilmRender(active.id)); setError('') } catch (e) { setError((e as Error).message) }
+    try { setRenderState(await api.resumeFilmRender(active.id)); setError('') } catch (e) { setError(uiErrorVi((e as Error).message)) }
   }
 
   const retryRender = async (jobId: string) => {
     if (!active) return
-    try { await api.retryFilmRender(jobId); await refreshRender(active.id); setError('') } catch (e) { setError((e as Error).message) }
+    try { await api.retryFilmRender(jobId); await refreshRender(active.id); setError('') } catch (e) { setError(uiErrorVi((e as Error).message)) }
   }
 
   const autoPipeline = async () => {
-    if (!active || renderBusy) return
+    if (!active || renderBusy || productionBusy || consistencyBusy) return
     setRenderBusy(true)
     setError('')
     try {
-      const audited = await api.checkFilmContinuity(active.id)
-      setActive(audited)
-      const state = await api.queueFilmRender(audited.id, audited.scenes.map(scene => scene.id))
-      setRenderState(state)
-      if (!state.adapter.configured) setError('Continuity đã đạt điều kiện queue. AUTO PIPELINE đang dừng ở bước Render vì chưa cấu hình Video Render Adapter thật.')
-    } catch (e) { setError((e as Error).message) }
+      let project = await api.checkFilmContinuity(active.id)
+
+      if (!project.consistency_report?.final_gate) {
+        if (project.consistency_report?.status !== 'REPAIRABLE') {
+          const first = project.consistency_report?.effective_errors?.[0] || project.consistency_report?.review_items?.[0]
+          throw new Error(first?.detail || 'Quy trình tạo phim tự động dừng vì kiểm tra tính nhất quán Rule + AI chưa đạt.')
+        }
+        const fixed = await api.repairFilmConsistency(project.id)
+        project = fixed.project
+      }
+
+      if (!project.consistency_report?.final_gate) {
+        throw new Error('Tự động sửa đã chạy nhưng kiểm tra tính nhất quán vẫn chưa PASS.')
+      }
+
+      if (!project.production_gate?.final_gate) {
+        const gate = await api.runFilmProductionGate(project.id)
+        project = gate.project
+      }
+      if (!project.production_gate?.final_gate) {
+        project = await api.autoRepairFilm(project.id)
+        project = await api.checkFilmContinuity(project.id)
+        const gate = await api.runFilmProductionGate(project.id)
+        project = gate.project
+      }
+
+      setActive(project)
+      if (!project.consistency_report?.final_gate || !project.production_gate?.final_gate) {
+        throw new Error('Quy trình tạo phim tự động chưa vượt qua đầy đủ Consistency V2 và Production Gate.')
+      }
+
+      await api.startFilmPipeline(project.id)
+      await refreshMedia(project.id)
+    } catch (e) { setError(uiErrorVi((e as Error).message)) }
     finally { setRenderBusy(false) }
   }
 
@@ -233,6 +543,144 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     URL.revokeObjectURL(href)
   }
 
+  const generateCanonicalAssets = async (resourceType?: FilmProviderResource['resource_type'], entityIds?: string[]) => {
+    if (!active || canonicalGenerating) return
+    setResourceBusy(resourceType ? `ai-${resourceType}` : 'ai-all')
+    setError('')
+    try {
+      const result = await api.generateFilmResources(active.id, resourceType, entityIds, canonicalProvider, canonicalModel)
+      setResources(result.resources || [])
+      if (!result.accepted) {
+        setError('Không có tài nguyên nào cần AI tạo mới.')
+      }
+    } catch (e) {
+      setError(uiErrorVi((e as Error).message))
+    } finally {
+      setResourceBusy('')
+    }
+  }
+
+  const qcCanonicalAssets = async (resourceType?: FilmProviderResource['resource_type'], entityIds?: string[], autoRepair = true) => {
+    if (!active || canonicalGenerating || canonicalQcRunning) return
+    setResourceBusy(resourceType ? `qc-${resourceType}` : 'qc-all')
+    setError('')
+    try {
+      const result = await api.qcFilmResources(
+        active.id,
+        resourceType,
+        entityIds,
+        autoRepair,
+        canonicalProvider,
+        canonicalModel,
+      )
+      setResources(result.resources || [])
+    } catch (e) {
+      setError(uiErrorVi((e as Error).message))
+    } finally {
+      setResourceBusy('')
+    }
+  }
+
+  const uploadCanonicalAsset = async (resource: FilmProviderResource, file?: File) => {
+    if (!active || !file) return
+    if (resource.status === 'locked') {
+      setError('Tài nguyên này đã khóa cho quá trình render. Không thể thay ảnh canonical giữa phim.')
+      return
+    }
+    setResourceBusy(resource.id)
+    setError('')
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result || ''))
+        reader.onerror = () => reject(new Error('Không đọc được file ảnh.'))
+        reader.readAsDataURL(file)
+      })
+      await api.uploadFilmResourceAsset(active.id, resource.resource_type, resource.entity_id, dataUrl, file.name)
+      await refreshResources(active.id)
+      await refreshRender(active.id)
+    } catch (e) {
+      setError(uiErrorVi((e as Error).message))
+    } finally {
+      setResourceBusy('')
+    }
+  }
+
+  const lockVisualResources = async () => {
+    if (!active) return
+    setResourceBusy('lock-all')
+    setError('')
+    try {
+      const result = await api.lockFilmResources(active.id)
+      setResources(result.resources || [])
+      await refreshRender(active.id)
+      if (result.missing.length) {
+        setError(`Còn ${result.missing.length} tài nguyên chưa có ảnh canonical. Hệ thống chưa cho phép tạo video cho các cảnh phụ thuộc vào chúng.`)
+      }
+    } catch (e) {
+      setError(uiErrorVi((e as Error).message))
+    } finally {
+      setResourceBusy('')
+    }
+  }
+
+  const resourcePanel = (type: FilmProviderResource['resource_type'], bible: Array<Record<string, unknown>>) => {
+    const rows = resources.filter(item => item.resource_type === type && item.status !== 'retired')
+    const byId = new Map(rows.map(item => [item.entity_id, item]))
+    return (
+      <div className="visual-resource-panel">
+        <div className="visual-resource-head">
+          <div><strong>TÀI NGUYÊN HÌNH ẢNH CHUẨN</strong><span>Ảnh này được dùng để khóa hình ảnh xuyên suốt các phân cảnh.</span></div>
+          <div className="visual-resource-head-actions">
+            <button disabled={!canonicalProviderReady || canonicalGenerating || canonicalQcRunning || resourceBusy === `ai-${type}`} onClick={() => generateCanonicalAssets(type)}><Sparkles size={12} /> AI tạo nhóm</button>
+            <button disabled={!canonicalProviderReady || canonicalGenerating || canonicalQcRunning || resourceBusy === `qc-${type}`} onClick={() => qcCanonicalAssets(type, undefined, true)}><CheckCircle2 size={12} /> QC + tự sửa</button>
+            <button disabled={canonicalGenerating || canonicalQcRunning || resourceBusy === 'lock-all'} onClick={lockVisualResources}><LockKeyhole size={12} /> Khóa tài nguyên</button>
+          </div>
+        </div>
+        {bible.map((entity, index) => {
+          const entityId = String(entity.id || entity.character_id || entity.location_id || entity.prop_id || `${type}_${index + 1}`)
+          const resource = byId.get(entityId)
+          if (!resource) return <div className="visual-resource-card missing" key={entityId}><strong>{entityId}</strong><span>Chưa đồng bộ resource record.</span></div>
+          const rawAssetUrl = String(resource.metadata?.canonical_asset_url || '')
+          const assetVersion = Number(resource.metadata?.asset_version || 0)
+          const assetUrl = rawAssetUrl ? `${rawAssetUrl}?v=${assetVersion}` : ''
+          const locked = resource.status === 'locked'
+          const qc = resource.metadata?.canonical_qc as Record<string, unknown> | undefined
+          const hardGate = qc?.hard_gate as Record<string, unknown> | undefined
+          const qcPassed = hardGate?.passed === true
+          const qcScore = typeof qc?.overall_score === 'number' ? Math.round(qc.overall_score as number) : null
+          const qcStatus = String(resource.metadata?.canonical_qc_status || (qcPassed ? 'passed' : 'not_checked'))
+          return (
+            <div className={`visual-resource-card ${resource.status}`} key={resource.id}>
+              <div className="visual-resource-preview">
+                {assetUrl ? <img src={assetUrl} alt={entityId} /> : <span>CHƯA CÓ ẢNH</span>}
+              </div>
+              <div className="visual-resource-info">
+                <strong>{entityId}</strong>
+                <span>Trạng thái: {resource.status.toUpperCase()}</span>
+                <span className={qcPassed ? 'canonical-qc-pass' : qcStatus === 'failed' || qcStatus === 'error' ? 'canonical-qc-fail' : 'canonical-qc-pending'}>Canonical QC: {qcStatus.toUpperCase()}{qcScore !== null ? ` · ${qcScore}/100` : ''}{qcPassed ? ' ✓' : ''}</span>
+                {!!resource.metadata?.generation_status && <span>AI: {String(resource.metadata.generation_status).toUpperCase()} · {String(resource.metadata.generation_provider || '').toUpperCase()} · {String(resource.metadata.generation_model || resource.metadata.model || '')}</span>}
+                <small>{String(entity.name || entity.title || entity.description || '').slice(0, 120)}</small>
+                <div className="visual-resource-row-actions">
+                  <button disabled={locked || !canonicalProviderReady || canonicalGenerating || canonicalQcRunning} onClick={() => generateCanonicalAssets(type, [entityId])}><Sparkles size={11} /> {assetUrl ? 'AI tạo lại' : 'AI tạo ảnh'}</button>
+                  <button disabled={!assetUrl || !canonicalProviderReady || canonicalGenerating || canonicalQcRunning} onClick={() => qcCanonicalAssets(type, [entityId], true)}><CheckCircle2 size={11} /> QC + tự sửa</button>
+                  <label className={locked ? 'disabled' : ''}>
+                  {resourceBusy === resource.id ? 'Đang tải...' : locked ? 'Đã khóa' : 'Chọn ảnh canonical'}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      disabled={locked || resourceBusy === resource.id}
+                      onChange={e => uploadCanonicalAsset(resource, e.target.files?.[0])}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
 
   const field = (key: keyof FilmScene) => String((draft[key] ?? selectedScene?.[key] ?? '') as string)
 
@@ -246,7 +694,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
             <div className="film-project-list">
               {projects.map(project => (
                 <div className="film-project-row" key={project.id}>
-                  <button onClick={() => openProject(project.id)}><strong>{project.name}</strong><span>{project.scene_count} scene · {project.status}</span></button>
+                  <button onClick={() => openProject(project.id)}><strong>{project.name}</strong><span>{project.scene_count} phân cảnh · {filmStatusVi(project.status)}</span></button>
                   <button className="film-project-trash" onClick={() => removeProject(project.id)}><Trash2 size={13} /></button>
                 </div>
               ))}
@@ -254,22 +702,24 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
             </div>
           </aside>
           <div className="film-start-main">
-            <div className="film-start-kicker"><Sparkles size={15} /> TH MEDIA · CINEMATIC STUDIO</div>
+            <div className="film-start-kicker"><Sparkles size={15} /> TH MEDIA · XƯỞNG SẢN XUẤT PHIM ĐIỆN ẢNH</div>
             <h1>Một câu chuyện.<br /><span>Một thế giới điện ảnh nhất quán.</span></h1>
-            <p>AI đọc toàn bộ nội dung trước, xây Story Bible và Continuity rồi mới chia thành các scene có thể render độc lập.</p>
+            <p>AI đọc toàn bộ nội dung, xây dữ liệu chuẩn và kiểm tra tính nhất quán trước khi chia thành các phân cảnh có thể tạo video độc lập.</p>
             <div className="film-story-input">
               <input value={name} onChange={e => setName(e.target.value)} placeholder="Tên dự án (không bắt buộc)" />
-              <textarea value={story} onChange={e => setStory(e.target.value)} placeholder="Nội dung gốc / Story Input — dán kịch bản, truyện, bài viết, nội dung quảng cáo, review, phim ngắn..." />
+              <textarea value={story} onChange={e => setStory(e.target.value)} placeholder="Nội dung gốc — dán kịch bản, truyện, bài viết, nội dung quảng cáo, đánh giá, phim ngắn..." />
               <div className="film-settings-grid">
-                <label>Thời lượng scene<select value={settings.scene_duration} onChange={e => setSettings({ ...settings, scene_duration: Number(e.target.value) })}><option value={4}>4 giây</option><option value={6}>6 giây</option><option value={8}>8 giây</option><option value={10}>10 giây</option><option value={12}>12 giây</option></select></label>
-                <label>Tỷ lệ<select value={settings.aspect_ratio} onChange={e => setSettings({ ...settings, aspect_ratio: e.target.value })}><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
-                <label>Độ phân giải<select value={settings.resolution} onChange={e => setSettings({ ...settings, resolution: e.target.value })}><option>720p</option><option>1080p</option><option>Highest</option></select></label>
-                <label>Phong cách<select value={settings.style} onChange={e => setSettings({ ...settings, style: e.target.value })}><option>Cinematic</option><option>Photorealistic</option><option>Commercial</option><option>Documentary</option><option>Anime</option><option>3D Animation</option><option>Product Advertising</option></select></label>
+                <label>Thời lượng phân cảnh<select value={settings.scene_duration} onChange={e => setSettings({ ...settings, scene_duration: Number(e.target.value) })}>{(flowCaps?.durations?.length ? flowCaps.durations : [4, 6, 8, 10, 12]).map(value => <option key={value} value={value}>{value} giây</option>)}</select></label>
+                <label>Tỷ lệ<select value={settings.aspect_ratio} onChange={e => setSettings({ ...settings, aspect_ratio: e.target.value })}>{(flowCaps?.aspect_ratios?.length ? flowCaps.aspect_ratios : ['16:9', '9:16', '1:1']).map(value => <option key={value}>{value}</option>)}</select></label>
+                <label>Độ phân giải<select value={settings.resolution} onChange={e => setSettings({ ...settings, resolution: e.target.value })}>{(flowCaps?.resolutions?.length ? flowCaps.resolutions : ['720p', '1080p', 'Highest']).map(value => <option key={value} value={value}>{value === 'Highest' ? 'Cao nhất' : value}</option>)}</select></label>
+                <label>Phong cách<select value={settings.style} onChange={e => setSettings({ ...settings, style: e.target.value })}>{FILM_STYLE_OPTIONS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+                <label>Dự án Google Flow<select value={settings.flow_project_id || ''} onChange={e => setSettings({ ...settings, flow_project_id: e.target.value || null, flow_model: null })}><option value="">Tự dùng dự án Flow mới nhất</option>{flowProjects.map(project => <option key={project.id} value={project.id}>{project.modified_label || 'Dự án Flow'} · {project.id.slice(0, 8)}</option>)}</select></label>
               </div>
               <div className="film-lock-row">
-                <button className={settings.character_lock ? 'on' : ''} onClick={() => setSettings({ ...settings, character_lock: !settings.character_lock })}><LockKeyhole size={13} /> Lock Character</button>
-                <button className={settings.location_lock ? 'on' : ''} onClick={() => setSettings({ ...settings, location_lock: !settings.location_lock })}><MapPin size={13} /> Lock Location</button>
-                <button className={settings.auto_continuity ? 'on' : ''} onClick={() => setSettings({ ...settings, auto_continuity: !settings.auto_continuity })}><WandSparkles size={13} /> Auto Continuity</button>
+                <button className={settings.character_lock ? 'on' : ''} onClick={() => setSettings({ ...settings, character_lock: !settings.character_lock })}><LockKeyhole size={13} /> Khóa nhân vật</button>
+                <button className={settings.location_lock ? 'on' : ''} onClick={() => setSettings({ ...settings, location_lock: !settings.location_lock })}><MapPin size={13} /> Khóa bối cảnh</button>
+                <button className={settings.auto_continuity ? 'on' : ''} onClick={() => setSettings({ ...settings, auto_continuity: !settings.auto_continuity })}><WandSparkles size={13} /> Tự động nối cảnh</button>
+                <button className={settings.require_provider_assets ? 'on' : ''} onClick={() => setSettings({ ...settings, require_provider_assets: !settings.require_provider_assets })}><LockKeyhole size={13} /> Bắt buộc tài nguyên tham chiếu</button>
               </div>
               <button className="film-analyze-button" disabled={!story.trim() || !model || creating} onClick={createAndAnalyze}>{creating ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />} PHÂN TÍCH NỘI DUNG</button>
               {error && <div className="film-error"><AlertTriangle size={14} />{error}</div>}
@@ -279,9 +729,9 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       ) : ['queued', 'analyzing'].includes(active.status) ? (
         <div className="film-processing">
           <div className="film-processing-icon"><Loader2 className="spin" size={28} /></div>
-          <div className="film-kicker">STORY ARCHITECT</div>
+          <div className="film-kicker">KIẾN TRÚC SƯ CÂU CHUYỆN</div>
           <h2>{active.name}</h2>
-          <p>{active.stage}</p>
+          <p>{stageVi(active.stage)}</p>
           <div className="film-progress"><div style={{ width: `${active.progress}%` }} /></div>
           <span>{active.progress}% · AI đang đọc toàn bộ câu chuyện trước khi chia cảnh</span>
           <button onClick={newProject}>Tạo dự án khác</button>
@@ -290,43 +740,58 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
         <div className="film-processing film-failed">
           <AlertTriangle size={30} />
           <h2>Phân tích chưa hoàn tất</h2>
-          <p>{active.error || 'Không rõ lỗi'}</p>
+          <p>{uiErrorVi(active.error || 'Không rõ lỗi')}</p>
           <button onClick={async () => setActive(await api.analyzeFilmProject(active.id))}>Thử phân tích lại</button>
           <button onClick={newProject}>Dự án mới</button>
         </div>
       ) : (
         <div className="film-editor-shell">
           <div className="film-editor-head">
-            <div><div className="film-kicker">FILM PROJECT</div><h2>{active.name}</h2><span>{active.scenes.length} scene · {active.settings.aspect_ratio} · {active.settings.resolution} · {active.settings.style}</span></div>
-            <div className="film-head-actions"><button onClick={newProject}><Plus size={14} /> Dự án mới</button><button onClick={exportFlowPrompts}><Download size={14} /> Flow Prompts</button><button onClick={exportProject}><Download size={14} /> Export JSON</button></div>
+            <div><div className="film-kicker">DỰ ÁN PHIM</div><h2>{active.name}</h2><span>{active.scenes.length} phân cảnh · {active.settings.aspect_ratio} · {active.settings.resolution === 'Highest' ? 'Cao nhất' : active.settings.resolution} · {styleLabelVi(active.settings.style)}</span></div>
+            <div className="film-head-actions"><button onClick={newProject}><Plus size={14} /> Dự án mới</button><button onClick={exportFlowPrompts}><Download size={14} /> Xuất lệnh Google Flow</button><button onClick={exportProject}><Download size={14} /> Xuất dữ liệu dự án</button></div>
           </div>
           {error && <div className="film-error editor-error"><AlertTriangle size={14} />{error}</div>}
           <div className="film-editor-grid">
             <aside className="film-project-panel">
-              <div className="film-panel-title"><BookOpen size={14} /><strong>PROJECT</strong></div>
+              <div className="film-panel-title"><BookOpen size={14} /><strong>DỰ ÁN</strong></div>
               <div className="film-project-tabs">
-                <button className={projectTab === 'original' ? 'active' : ''} onClick={() => setProjectTab('original')}>Original Text</button>
-                <button className={projectTab === 'settings' ? 'active' : ''} onClick={() => setProjectTab('settings')}>Project Settings</button>
-                <button className={projectTab === 'story' ? 'active' : ''} onClick={() => setProjectTab('story')}>Story Bible</button>
-                <button className={projectTab === 'characters' ? 'active' : ''} onClick={() => setProjectTab('characters')}>Character Bible <span>{active.characters.length}</span></button>
-                <button className={projectTab === 'locations' ? 'active' : ''} onClick={() => setProjectTab('locations')}>Location Bible <span>{active.locations.length}</span></button>
-                <button className={projectTab === 'props' ? 'active' : ''} onClick={() => setProjectTab('props')}>Prop Bible <span>{active.props.length}</span></button>
-                <button className={projectTab === 'master' ? 'active' : ''} onClick={() => setProjectTab('master')}>Master Prompt</button>
+                <button className={projectTab === 'original' ? 'active' : ''} onClick={() => setProjectTab('original')}>Kịch bản gốc</button>
+                <button className={projectTab === 'settings' ? 'active' : ''} onClick={() => setProjectTab('settings')}>Cài đặt dự án</button>
+                <button className={projectTab === 'story' ? 'active' : ''} onClick={() => setProjectTab('story')}>Nội dung & quy tắc phim</button>
+                <button className={projectTab === 'characters' ? 'active' : ''} onClick={() => setProjectTab('characters')}>Dữ liệu nhân vật <span>{active.characters.length}</span></button>
+                <button className={projectTab === 'locations' ? 'active' : ''} onClick={() => setProjectTab('locations')}>Dữ liệu bối cảnh <span>{active.locations.length}</span></button>
+                <button className={projectTab === 'props' ? 'active' : ''} onClick={() => setProjectTab('props')}>Dữ liệu đạo cụ <span>{active.props.length}</span></button>
+                <button className={projectTab === 'master' ? 'active' : ''} onClick={() => setProjectTab('master')}>Chỉ dẫn tổng thể</button>
               </div>
               <div className="film-bible-view">
                 {projectTab === 'original' && <p className="film-original-text">{active.original_text}</p>}
-                {projectTab === 'settings' && <pre>{jsonText(active.settings)}</pre>}
-                {projectTab === 'story' && <pre>{jsonText(active.story_bible)}</pre>}
-                {projectTab === 'characters' && <pre>{jsonText(active.characters)}</pre>}
-                {projectTab === 'locations' && <pre>{jsonText(active.locations)}</pre>}
-                {projectTab === 'props' && <pre>{jsonText(active.props)}</pre>}
-                {projectTab === 'master' && <p>{active.master_prompt || 'Chưa có Master Prompt.'}</p>}
+                {projectTab === 'settings' && (
+                  <div>
+                    <div className="film-settings-grid">
+                      <label>Dự án Google Flow<select value={settings.flow_project_id || ''} onChange={e => saveActiveSettings({ flow_project_id: e.target.value || null, flow_model: null })}><option value="">Tự dùng dự án Flow mới nhất</option>{flowProjects.map(project => <option key={project.id} value={project.id}>{project.modified_label || 'Dự án Flow'} · {project.id.slice(0, 8)}</option>)}</select></label>
+                      <label>Thời lượng phân cảnh<select value={settings.scene_duration} onChange={e => saveActiveSettings({ scene_duration: Number(e.target.value) })}>{(flowCaps?.durations?.length ? flowCaps.durations : [4, 6, 8, 10, 12]).map(value => <option key={value} value={value}>{value} giây</option>)}</select></label>
+                      <label>Tỷ lệ<select value={settings.aspect_ratio} onChange={e => saveActiveSettings({ aspect_ratio: e.target.value })}>{(flowCaps?.aspect_ratios?.length ? flowCaps.aspect_ratios : ['16:9', '9:16', '1:1']).map(value => <option key={value}>{value}</option>)}</select></label>
+                      <label>Độ phân giải<select value={settings.resolution} onChange={e => saveActiveSettings({ resolution: e.target.value })}>{(flowCaps?.resolutions?.length ? flowCaps.resolutions : ['720p', '1080p', 'Highest']).map(value => <option key={value} value={value}>{value === 'Highest' ? 'Cao nhất' : value}</option>)}</select></label>
+                      <label>Phong cách<select value={settings.style} onChange={e => saveActiveSettings({ style: e.target.value })}>{FILM_STYLE_OPTIONS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+                    </div>
+                    <div className="film-lock-row">
+                      <button className={visualAssetsRequired ? 'on' : ''} disabled={renderState?.adapter.id === 'flow_bridge'} onClick={() => saveActiveSettings({ require_provider_assets: !settings.require_provider_assets })}><LockKeyhole size={13} /> Bắt buộc tài nguyên tham chiếu{renderState?.adapter.id === 'flow_bridge' ? ' · Flow' : ''}</button>
+                    </div>
+                    {flowCaps && <p>Khả năng Google Flow: {flowCaps.models.length} mô hình · {flowCaps.resolutions.join('/')} · {flowCaps.durations.join('/')} giây</p>}
+                    <pre>{jsonTextVi(active.settings)}</pre>
+                  </div>
+                )}
+                {projectTab === 'story' && <pre>{jsonTextVi(active.story_bible)}</pre>}
+                {projectTab === 'characters' && resourcePanel('character', active.characters)}
+                {projectTab === 'locations' && resourcePanel('location', active.locations)}
+                {projectTab === 'props' && resourcePanel('prop', active.props)}
+                {projectTab === 'master' && <p>{active.master_prompt || 'Chưa có chỉ dẫn tổng thể.'}</p>}
               </div>
-              <div className="film-lock-summary"><span><LockKeyhole size={12} /> Character {active.settings.character_lock ? 'LOCKED' : 'OFF'}</span><span><MapPin size={12} /> Location {active.settings.location_lock ? 'LOCKED' : 'OFF'}</span><span><WandSparkles size={12} /> Auto Continuity {active.settings.auto_continuity ? 'ON' : 'OFF'}</span></div>
+              <div className="film-lock-summary"><span><LockKeyhole size={12} /> Nhân vật {active.settings.character_lock ? 'ĐÃ KHÓA' : 'TẮT'}</span><span><MapPin size={12} /> Bối cảnh {active.settings.location_lock ? 'ĐÃ KHÓA' : 'TẮT'}</span><span><WandSparkles size={12} /> Nối cảnh tự động {active.settings.auto_continuity ? 'BẬT' : 'TẮT'}</span><span><LockKeyhole size={12} /> Tài nguyên tham chiếu {visualAssetsRequired ? 'BẮT BUỘC' : 'KHÔNG BẮT BUỘC'}</span></div>
             </aside>
 
             <section className="film-storyboard-panel">
-              <div className="film-panel-title"><Clapperboard size={14} /><strong>STORYBOARD</strong><span>{active.scenes.length} clips</span></div>
+              <div className="film-panel-title"><Clapperboard size={14} /><strong>BẢNG PHÂN CẢNH</strong><span>{active.scenes.length} phân cảnh</span></div>
               <div className="film-scene-list">
                 {active.scenes.map(scene => {
                   const renderJob = latestRenderByScene.get(scene.id)
@@ -335,10 +800,10 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
                     <button key={scene.id} className={selectedScene?.id === scene.id ? 'active' : ''} onClick={() => setActiveSceneId(scene.id)}>
                       <span className={`film-scene-select ${selected ? 'selected' : ''}`} onClick={e => { e.stopPropagation(); toggleRenderSelection(scene.id) }}>{selected ? '✓' : ''}</span>
                       <div className="film-scene-index">{String(scene.scene_index).padStart(2, '0')}</div>
-                      <div><strong>{scene.title || scene.id}</strong><p>{scene.summary || scene.action || 'Chưa có mô tả'}</p><span>{scene.duration}s · {scene.location_id || 'No location'} · {scene.characters.join(', ') || 'No character'}</span></div>
+                      <div><strong>{scene.title || scene.id}</strong><p>{scene.summary || scene.action || 'Chưa có mô tả'}</p><span>{scene.duration} giây · {scene.location_id || 'Chưa xác định bối cảnh'} · {scene.characters.join(', ') || 'Chưa xác định nhân vật'}</span></div>
                       <div className="film-scene-flags">
                         {!!scene.warnings.length && <AlertTriangle size={13} />}
-                        {renderJob && <em className={`render-mini ${renderJob.status}`}>{renderJob.status}</em>}
+                        {renderJob && <em className={`render-mini ${renderJob.status}`}>{renderStatusVi(renderJob.status)}</em>}
                       </div>
                     </button>
                   )
@@ -348,66 +813,238 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
 
             <section className="film-scene-editor">
               {selectedScene ? (<>
-                <div className="film-scene-editor-head"><div><span>{selectedScene.id}</span><h3>{selectedScene.title}</h3></div><button onClick={saveScene}><Save size={14} /> Lưu scene</button></div>
-                {!!selectedScene.warnings.length && <div className="continuity-warning"><AlertTriangle size={14} /><div><strong>CONTINUITY WARNING</strong>{selectedScene.warnings.map((w, i) => <p key={i}>{w}</p>)}</div></div>}
+                <div className="film-scene-editor-head"><div><span>{selectedScene.id}</span><h3>{selectedScene.title}</h3></div><button onClick={saveScene}><Save size={14} /> Lưu phân cảnh</button></div>
+                {!!selectedScene.warnings.length && <div className="continuity-warning"><AlertTriangle size={14} /><div><strong>CẢNH BÁO TÍNH NHẤT QUÁN</strong>{selectedScene.warnings.map((w, i) => <p key={i}>{w}</p>)}</div></div>}
                 <div className="film-editor-fields">
-                  <label>Scene title<input value={field('title')} onChange={e => setField('title', e.target.value)} /></label>
-                  <label>Original text<textarea value={field('source_text')} onChange={e => setField('source_text', e.target.value)} /></label>
-                  <label>Summary<textarea value={field('summary')} onChange={e => setField('summary', e.target.value)} /></label>
-                  <div className="film-two-cols"><label>Character IDs<input value={(draft.characters as string[] | undefined)?.join(', ') ?? selectedScene.characters.join(', ')} onChange={e => setField('characters', e.target.value.split(',').map(x => x.trim()).filter(Boolean))} /></label><label>Location ID<input value={field('location_id')} onChange={e => setField('location_id', e.target.value)} /></label></div>
-                  <label>Action<textarea value={field('action')} onChange={e => setField('action', e.target.value)} /></label>
-                  <div className="film-two-cols"><label>Camera<textarea value={field('camera')} onChange={e => setField('camera', e.target.value)} /></label><label>Duration<input type="number" min={1} max={60} value={Number(draft.duration ?? selectedScene.duration)} onChange={e => setField('duration', Number(e.target.value))} /></label></div>
-                  <div className="film-two-cols"><label>Lighting<textarea value={field('lighting')} onChange={e => setField('lighting', e.target.value)} /></label><label>Atmosphere<textarea value={field('atmosphere')} onChange={e => setField('atmosphere', e.target.value)} /></label></div>
-                  <label>Voiceover<textarea value={field('voiceover')} onChange={e => setField('voiceover', e.target.value)} /></label>
-                  <label>Dialogue JSON<textarea className="film-code-area" value={dialogueText} onChange={e => setDialogueText(e.target.value)} /></label>
-                  <label>Start state<textarea value={field('start_state')} onChange={e => setField('start_state', e.target.value)} /></label>
-                  <label>End state<textarea value={field('end_state')} onChange={e => setField('end_state', e.target.value)} /></label>
-                  <label>Visual Prompt<textarea className="film-prompt-area" value={field('visual_prompt')} onChange={e => setField('visual_prompt', e.target.value)} /></label>
-                  <label>Google Flow Prompt<textarea className="film-prompt-area" value={field('flow_prompt')} onChange={e => setField('flow_prompt', e.target.value)} /></label>
+                  <label>Tên phân cảnh<input value={field('title')} onChange={e => setField('title', e.target.value)} /></label>
+                  <label>Nội dung gốc {selectedScene.source_hash && <small>· Đã khóa theo kịch bản gốc</small>}<textarea readOnly={!!selectedScene.source_hash} value={field('source_text')} onChange={e => setField('source_text', e.target.value)} /></label>
+                  <label>Tóm tắt phân cảnh<textarea value={field('summary')} onChange={e => setField('summary', e.target.value)} /></label>
+                  <div className="film-two-cols"><label>Nhân vật trong cảnh<input disabled={!!selectedScene.source_hash} value={(draft.characters as string[] | undefined)?.join(', ') ?? selectedScene.characters.join(', ')} onChange={e => setField('characters', e.target.value.split(',').map(x => x.trim()).filter(Boolean))} /></label><label>Bối cảnh<input disabled={!!selectedScene.source_hash} value={field('location_id')} onChange={e => setField('location_id', e.target.value)} /></label></div>
+                  <label>Hành động {selectedScene.source_hash && <small>· Đã khóa</small>}<textarea readOnly={!!selectedScene.source_hash} value={field('action')} onChange={e => setField('action', e.target.value)} /></label>
+                  <div className="film-two-cols"><label>Góc máy / Chuyển động máy<textarea value={field('camera')} onChange={e => setField('camera', e.target.value)} /></label><label>Thời lượng<input disabled={!!selectedScene.source_hash} type="number" min={1} max={60} value={Number(draft.duration ?? selectedScene.duration)} onChange={e => setField('duration', Number(e.target.value))} /></label></div>
+                  <div className="film-two-cols"><label>Ánh sáng<textarea value={field('lighting')} onChange={e => setField('lighting', e.target.value)} /></label><label>Bầu không khí<textarea value={field('atmosphere')} onChange={e => setField('atmosphere', e.target.value)} /></label></div>
+                  <label>Lời thuyết minh {selectedScene.source_hash && <small>· Đã khóa</small>}<textarea readOnly={!!selectedScene.source_hash} value={field('voiceover')} onChange={e => setField('voiceover', e.target.value)} /></label>
+                  <label>Lời thoại nhân vật {selectedScene.source_hash && <small>· Đã khóa theo kịch bản gốc</small>}<textarea readOnly={!!selectedScene.source_hash} className="film-code-area" value={selectedScene.source_hash ? jsonTextVi(selectedScene.dialogue) : dialogueText} onChange={e => setDialogueText(e.target.value)} /></label>
+                  <label>Trạng thái đầu cảnh<textarea value={field('start_state')} onChange={e => setField('start_state', e.target.value)} /></label>
+                  <label>Trạng thái cuối cảnh<textarea value={field('end_state')} onChange={e => setField('end_state', e.target.value)} /></label>
+                  <label>Mô tả hình ảnh <small>· Nội dung kỹ thuật cho AI</small><textarea className="film-prompt-area" value={field('visual_prompt')} onChange={e => setField('visual_prompt', e.target.value)} /></label>
+                  <label>Lệnh tạo video Google Flow <small>· Giữ nguyên nội dung kỹ thuật để gửi Google Flow</small><textarea className="film-prompt-area" value={field('flow_prompt')} onChange={e => setField('flow_prompt', e.target.value)} /></label>
                 </div>
-                <div className="film-scene-generate"><button disabled={renderBusy} onClick={() => queueRender([selectedScene.id])}>{renderBusy ? <Loader2 className="spin" size={14} /> : <Play size={14} />} Generate Scene</button><span>Render adapter: {renderState?.adapter.name || 'đang kiểm tra'} · {renderState?.adapter.configured ? 'READY' : 'NOT CONFIGURED'}</span>{selectedScene.result_url && <a href={selectedScene.result_url} target="_blank" rel="noreferrer">Mở video kết quả</a>}</div>
-              </>) : <div className="film-empty-editor">Chọn một scene để chỉnh sửa.</div>}
+                <FilmSceneMedia sceneId={selectedScene.id} items={galleryItems} onSelectVersion={async item => { if (item.id.startsWith('live-')) return; await api.selectFilmMedia(item.id); if (active) await refreshMedia(active.id) }} />
+                <div className="film-scene-generate"><button disabled={renderBusy || !renderGateReady} onClick={() => queueRender([selectedScene.id])}>{renderBusy ? <Loader2 className="spin" size={14} /> : <Play size={14} />} Tạo video phân cảnh</button><span>Kiểm tra trước khi tạo: {productionReady ? 'ĐẠT' : 'ĐANG CHẶN'} · Bộ máy tạo video: {renderState?.adapter.name ? adapterNameVi(renderState.adapter.name) : 'đang kiểm tra'} · {renderState?.adapter.configured ? 'SẴN SÀNG' : 'CHƯA CẤU HÌNH'}</span>{selectedScene.result_url && <a href={selectedScene.result_url} target="_blank" rel="noreferrer">Mở video kết quả</a>}</div>
+              </>) : <div className="film-empty-editor">Chọn một phân cảnh để chỉnh sửa.</div>}
             </section>
           </div>
           <div className="film-render-panel">
             <div className="film-render-head">
-              <div><span>RENDER ENGINE</span><strong>{renderState?.adapter.name || 'Đang kiểm tra adapter'}</strong><em>{renderState?.adapter.configured ? 'Adapter thật đã sẵn sàng' : 'Chưa cấu hình Video Render Adapter'} · QC: {renderState?.qc_adapter.name || 'đang kiểm tra'}</em></div>
+              <div><span>HỆ THỐNG TẠO VIDEO</span><strong>{renderState?.adapter.name ? adapterNameVi(renderState.adapter.name) : 'Đang kiểm tra bộ máy tạo video'}</strong><em>{renderState?.adapter.configured ? 'Bộ máy tạo video đã sẵn sàng' : 'Chưa cấu hình bộ máy tạo video'} · Kiểm tra chất lượng: {renderState?.qc_adapter.name ? adapterNameVi(renderState.qc_adapter.name) : 'đang kiểm tra'}{renderState?.resources ? ` · Canonical QC: ${renderState.resources.qc_passed || 0}/${renderState.resources.total} đạt · Khóa: ${renderState.resources.locked || 0}/${renderState.resources.total} · ${renderState.resources.qc_required || 0} cần QC` : ''}</em></div>
               <div className="film-render-controls">
-                {renderState?.queue.paused ? <button onClick={resumeRender}><Play size={13} /> Resume</button> : <button onClick={pauseRender}><Pause size={13} /> Pause</button>}
-                <button onClick={() => refreshRender(active.id)}><RotateCcw size={13} /> Refresh</button>
+                <button disabled={!canonicalProviderReady || canonicalGenerating || canonicalQcRunning || !activeCanonicalResources.some(item => !!item.local_path)} onClick={() => qcCanonicalAssets(undefined, undefined, true)}>{canonicalQcRunning ? <Loader2 className="spin" size={13} /> : <CheckCircle2 size={13} />} {canonicalQcRunning ? 'Vision QC đang chạy...' : canonicalReady ? 'Canonical QC đã đạt' : 'QC + tự sửa toàn bộ ảnh'}</button>
+                <button disabled={!canonicalProviderReady || canonicalGenerating || canonicalQcRunning || canonicalReady} onClick={() => generateCanonicalAssets()}>{canonicalGenerating ? <Loader2 className="spin" size={13} /> : <Sparkles size={13} />} {canonicalGenerating ? 'AI đang tạo ảnh...' : canonicalReady ? 'Ảnh chuẩn đã sẵn sàng' : canonicalProvider === 'flow' && flowAuthenticated !== true ? 'Đăng nhập Flow để tạo ảnh' : 'AI tạo toàn bộ ảnh chuẩn'}</button>
+                {renderState?.queue.paused ? <button onClick={resumeRender}><Play size={13} /> Tiếp tục</button> : <button onClick={pauseRender}><Pause size={13} /> Tạm dừng</button>}
+                <button onClick={() => refreshRender(active.id)}><RotateCcw size={13} /> Làm mới</button>
               </div>
             </div>
-            {!renderState?.adapter.configured && <div className="render-adapter-note"><AlertTriangle size={14} /><div><strong>Queue hoạt động nhưng chưa có dịch vụ tạo video thật.</strong><p>Có thể cấu hình adapter HTTP bằng FILM_RENDER_ADAPTER=http_json và FILM_RENDER_API_URL. Hệ thống không đánh dấu Completed nếu chưa nhận video thật.</p></div></div>}
+            <div className="film-production-config">
+              <div className="production-flow-state">
+                <span>GOOGLE FLOW</span>
+                <strong>{flowAuthenticated === true ? 'Đã đăng nhập' : flowAuthenticated === false ? 'Chưa vào workspace Flow' : 'Đang kết nối phiên...'}</strong>
+                <em>{flowAuthenticated === true
+                  ? (settings.flow_project_id ? `Dự án ${settings.flow_project_id.slice(0, 8)}` : 'Tự động: dự án Flow mới nhất')
+                  : (flowSessionHint || 'Email trên thanh trên chỉ là phiên đã lưu. Cần đăng nhập xong trong Chrome mới chọn được mô hình.')}</em>
+              </div>
+              <label>
+                Nguồn tạo ảnh chuẩn
+                <select
+                  value={canonicalProvider}
+                  disabled={canonicalGenerating}
+                  onChange={e => {
+                    const next = e.target.value as 'flow' | 'xkiro'
+                    setCanonicalProvider(next)
+                    if (next === 'flow') {
+                      const models = flowImageCaps?.models || []
+                      setCanonicalModel(models.includes('Nano Banana 2') ? 'Nano Banana 2' : (models[0] || 'Nano Banana 2'))
+                    } else {
+                      setCanonicalModel('sensenova/sensenova-u1.5-lite')
+                    }
+                  }}
+                >
+                  <option value="flow">Google Flow</option>
+                  <option value="xkiro">xKiro</option>
+                </select>
+              </label>
+              <label>
+                Mô hình tạo ảnh chuẩn
+                <select
+                  value={canonicalModel}
+                  disabled={canonicalGenerating || (canonicalProvider === 'flow' && flowAuthenticated !== true)}
+                  onChange={e => setCanonicalModel(e.target.value)}
+                >
+                  {canonicalProvider === 'flow'
+                    ? (flowImageCaps?.models?.length
+                        ? flowImageCaps.models.map(value => <option key={value}>{value}</option>)
+                        : <option>Nano Banana 2</option>)
+                    : <>
+                        <option value="sensenova/sensenova-u1.5-lite">SenseNova U1.5 Lite · Free</option>
+                        <option value="gpt-image">GPT Image · Paid</option>
+                      </>}
+                </select>
+              </label>
+              <label>
+                Mô hình tạo video
+                <select
+                  value={settings.flow_model || ''}
+                  disabled={flowAuthenticated !== true || flowLoading || !flowCaps?.models?.length}
+                  onChange={e => saveActiveSettings({ flow_model: e.target.value || null })}
+                >
+                  <option value="">
+                    {flowAuthenticated !== true
+                      ? (flowLoading ? 'Đang mở Chrome Flow...' : 'Chưa kết nối được phiên Flow')
+                      : flowLoading
+                        ? 'Đang đọc mô hình từ Flow...'
+                        : 'Giữ mô hình hiện tại của Flow'}
+                  </option>
+                  {(flowCaps?.models || []).map(value => <option key={value}>{value}</option>)}
+                </select>
+              </label>
+              <div className="production-flow-meta">
+                {flowCaps
+                  ? <span>{flowCaps.models.length} mô hình · {flowCaps.resolutions.join('/')} · {flowCaps.durations.join('/')} giây</span>
+                  : <span>Chưa tải thông tin khả năng từ Flow</span>}
+                {flowAuthenticated !== true && (
+                  <button disabled={flowLoading} onClick={async () => {
+                    await api.openFlowLogin()
+                    await refreshFlowProduction(settings.flow_project_id)
+                  }}>
+                    Mở đăng nhập
+                  </button>
+                )}
+                <button disabled={flowLoading} onClick={() => refreshFlowProduction(settings.flow_project_id)}>
+                  <RotateCcw size={12} className={flowLoading ? 'spin' : ''} /> Làm mới danh sách mô hình
+                </button>
+              </div>
+            </div>
+            <div className={`production-gate-card ${consistencyReady ? 'pass' : 'fail'}`}>
+              <div className="production-gate-summary">
+                {consistencyReady ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                <div>
+                  <span>KIỂM TRA TÍNH NHẤT QUÁN RULE + AI · {active.consistency_report?.version || 'chưa kiểm tra'}</span>
+                  <strong>
+                    {consistencyReady
+                      ? `${active.consistency_report?.summary?.passed_scenes || active.scenes.length}/${active.consistency_report?.summary?.total_scenes || active.scenes.length} PHÂN CẢNH ĐẠT TÍNH NHẤT QUÁN`
+                      : consistencyStatus === 'REPAIRABLE'
+                        ? 'PHÁT HIỆN LỖI CÓ THỂ TỰ ĐỘNG SỬA'
+                        : consistencyStatus === 'REVIEW_REQUIRED'
+                          ? 'CẦN KIỂM TRA THÊM'
+                          : 'CHƯA ĐẠT TÍNH NHẤT QUÁN'}
+                  </strong>
+                  <em>
+                    Rule Engine: {active.consistency_report?.deterministic?.final_gate ? 'ĐẠT' : 'CHƯA ĐẠT'}
+                    {' · '}AI: {active.consistency_report?.semantic_review?.available
+                      ? `${active.consistency_report.semantic_review.verdict || 'Đang đánh giá'}${active.consistency_report.semantic_review.fallback_used ? ' · đã dùng model dự phòng' : ''}`
+                      : active.consistency_report?.semantic_review?.status_code === 429
+                        ? 'TẠM GIỚI HẠN TỐC ĐỘ'
+                        : 'CHƯA KHẢ DỤNG'}
+                    {active.consistency_report?.semantic_review?.model
+                      ? ` · Model kiểm tra: ${active.consistency_report.semantic_review.model}`
+                      : ''}
+                    {active.consistency_report?.semantic_review?.retry_after_seconds
+                      ? ` · Thử lại sau khoảng ${active.consistency_report.semantic_review.retry_after_seconds} giây`
+                      : ''}
+                    {' · '}{active.consistency_report?.summary?.passed_scenes || 0}/{active.consistency_report?.summary?.total_scenes || active.scenes.length} cảnh đạt
+                    {' · '}Evidence bác {active.consistency_report?.rejected_ai_findings?.length || 0} finding sai
+                  </em>
+                  {!consistencyReady && consistencyIssues[0] && (
+                    <p className="gate-issue">{consistencyIssues[0].scene || consistencyIssues[0].scene_id || 'DỰ ÁN'} · {consistencyIssues[0].detail || consistencyIssues[0].evidence || 'Cần kiểm tra thêm.'}</p>
+                  )}
+                  {consistencyReady && (active.consistency_report?.rejected_ai_findings?.length || 0) > 0 && (
+                    <p className="gate-note">AI nêu {active.consistency_report?.rejected_ai_findings?.length} nhận xét, nhưng Evidence Verifier đã bác vì không khớp sổ cái đạo cụ. Kết luận cuối: ĐẠT. Không có mục nào cần tự động sửa.</p>
+                  )}
+                  {!consistencyReady && active.consistency_report?.semantic_review?.summary && (
+                    <p className="gate-issue">{active.consistency_report.semantic_review.summary}</p>
+                  )}
+                  {!!active.consistency_report?.semantic_review?.tried_models?.length && (
+                    <p className="gate-meta">Model AI đã thử: {active.consistency_report.semantic_review.tried_models.join(' → ')}</p>
+                  )}
+                </div>
+              </div>
+              <div className="production-gate-actions">
+                <button disabled={consistencyBusy} onClick={checkContinuity}>
+                  {consistencyBusy ? <Loader2 className="spin" size={12} /> : <CheckCircle2 size={12} />} Kiểm tra bằng Rule + AI
+                </button>
+                <button
+                  disabled={consistencyBusy || consistencyStatus !== 'REPAIRABLE'}
+                  title={consistencyStatus === 'REPAIRABLE' ? 'Sửa các lỗi nhất quán có thể tự động xử lý' : consistencyReady ? 'Đã đạt. Không có lỗi để tự sửa.' : 'Chỉ bật khi kết quả là Có thể tự động sửa.'}
+                  onClick={repairConsistency}
+                >
+                  <WandSparkles size={12} /> Tự động sửa lỗi nhất quán
+                </button>
+              </div>
+            </div>
+            <div className={`production-gate-card ${productionGateReady ? 'pass' : 'fail'}`}>
+              <div className="production-gate-summary">
+                {productionGateReady ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                <div>
+                  <span>KIỂM TRA TRƯỚC KHI TẠO VIDEO · {active.production_gate?.version || 'chưa kiểm tra'}</span>
+                  <strong>{productionGateReady ? 'ĐỦ ĐIỀU KIỆN TẠO VIDEO' : 'CẦN SỬA TRƯỚC KHI TẠO VIDEO'}</strong>
+                  <em>
+                    {active.production_gate?.gates
+                      ? `${Object.values(active.production_gate.gates).filter(Boolean).length}/${Object.keys(active.production_gate.gates).length} hạng mục đạt`
+                      : 'Chưa có báo cáo kiểm tra trước khi tạo video'}
+                    {' · '}{active.production_gate?.error_count || 0} lỗi
+                  </em>
+                  {!productionGateReady && productionErrors[0] && (
+                    <p>{productionErrors[0].scene ? `${productionErrors[0].scene} · ` : ''}{errorCodeVi(productionErrors[0].code, productionErrors[0].detail)}</p>
+                  )}
+                </div>
+              </div>
+              <div className="production-gate-actions">
+                <button disabled={productionBusy} onClick={runProductionGate}>
+                  {productionBusy ? <Loader2 className="spin" size={12} /> : <CheckCircle2 size={12} />} Kiểm tra toàn bộ trước khi tạo
+                </button>
+                <button disabled={productionBusy} onClick={autoRepairDerived}>
+                  <WandSparkles size={12} /> Tự động sửa dữ liệu phát sinh
+                </button>
+              </div>
+            </div>
+            {!renderState?.adapter.configured && <div className="render-adapter-note"><AlertTriangle size={14} /><div><strong>Hàng đợi đã hoạt động nhưng chưa có dịch vụ tạo video thật.</strong><p>Hãy cấu hình dịch vụ tạo video trong phần cài đặt hệ thống. Hệ thống chỉ đánh dấu hoàn tất khi thực sự nhận được video kết quả.</p></div></div>}
+            <FilmContinuityControlCenter projectId={active.id} projectName={active.name} scenes={active.scenes} media={galleryItems} onRefresh={async () => { if (active) await refreshMedia(active.id) }} />
+            <FilmMediaGallery items={galleryItems} jobsProcessing={canonicalGenerating || canonicalQcRunning || (renderState?.jobs || []).some(job => ['waiting', 'preparing', 'generating'].includes(job.status))} onRefresh={async () => { if (active) await refreshMedia(active.id) }} onSelectVersion={async item => { if (item.id.startsWith('live-')) return; await api.selectFilmMedia(item.id); if (active) await refreshMedia(active.id) }} />
             <div className="film-render-jobs">
               {(renderState?.jobs || []).map(job => (
                 <div className={`film-render-job ${job.status}`} key={job.id}>
                   <div className="render-job-main">
-                    <div className="render-job-scene"><strong>{job.scene_id}</strong><span>Attempt {job.attempt + 1}</span></div>
+                    <div className="render-job-scene"><strong>{job.scene_id}</strong><span>Lần thử {job.attempt + 1}</span></div>
                     <div className="render-job-progress"><div><i style={{ width: `${job.progress}%` }} /></div><span>{job.progress}%</span></div>
-                    <b>{job.status}</b>
+                    <b>{renderStatusVi(job.status)}</b>
                     {job.status === 'completed' ? <CheckCircle2 size={15} /> : ['preparing','generating'].includes(job.status) ? <Loader2 className="spin" size={15} /> : job.status === 'failed' ? <AlertTriangle size={15} /> : <span />}
                   </div>
                   <div className="render-job-meta">
-                    {job.reference?.previous_scene_id ? <span>Continuity từ {String(job.reference.previous_scene_id)}</span> : <span>Opening scene</span>}
-                    {job.reference?.previous_last_frame_url ? <span>Last-frame reference: có</span> : <span>Last-frame reference: chưa có</span>}
-                    <span>QC: {job.qc_status}{job.consistency_score != null ? ` · ${job.consistency_score}/100` : ''}</span>
+                    {job.reference?.previous_scene_id ? <span>Nối tiếp từ {String(job.reference.previous_scene_id)}</span> : <span>Cảnh mở đầu</span>}
+                    {job.reference?.previous_last_frame_url ? <span>Khung hình cuối cảnh trước: Có</span> : <span>Khung hình cuối cảnh trước: Chưa có</span>}
+                    <span>Kiểm tra chất lượng: {qcStatusVi(job.qc_status)}{job.consistency_score != null ? ` · ${job.consistency_score}/100` : ''}</span>
+                    {visualQcSummary(job) && <span title={visualQcSummary(job)}>{visualQcSummary(job)}</span>}
+                    {audioQcSummary(job) && <span>{audioQcSummary(job)}</span>}
+                    {speechQcSummary(job) && <span title={speechQcSummary(job)}>{speechQcSummary(job)}</span>}
                   </div>
-                  {job.error && <p className="render-job-error">{job.error}</p>}
+                  {job.error && <p className="render-job-error">{job.provider_error_code ? errorCodeVi(job.provider_error_code, job.error) : uiErrorVi(job.error)}</p>}
                   <div className="render-job-actions">
                     {job.result_url && <a href={job.result_url} target="_blank" rel="noreferrer">Mở video</a>}
-                    {(job.status === 'failed' || job.qc_status === 'failed') && <button onClick={() => retryRender(job.id)}><RotateCcw size={12} /> {job.qc_status === 'failed' ? 'Regenerate scene' : 'Retry scene'}</button>}
+                    {(job.status === 'failed' || job.qc_status === 'failed') && <button onClick={() => retryRender(job.id)}><RotateCcw size={12} /> {job.qc_status === 'failed' ? 'Tạo lại phân cảnh' : 'Thử lại phân cảnh'}</button>}
                   </div>
                 </div>
               ))}
-              {!renderState?.jobs.length && <div className="render-empty">Chưa có render job. Chọn scene hoặc dùng Generate All.</div>}
+              {!renderState?.jobs.length && <div className="render-empty">Chưa có tác vụ tạo video. Chọn phân cảnh hoặc dùng “Tạo toàn bộ phân cảnh”.</div>}
             </div>
           </div>
           <div className="film-bottom-actions">
-            <button onClick={async () => setActive(await api.analyzeFilmProject(active.id))}><Sparkles size={14} /> ANALYZE</button><button onClick={checkContinuity}><AlertTriangle size={14} /> CONTINUITY CHECK</button>
-            <button disabled={renderBusy || (!selectedForRender.length && !activeSceneId)} onClick={() => queueRender(selectedForRender.length ? selectedForRender : (activeSceneId ? [activeSceneId] : []))}><Play size={14} /> GENERATE SELECTED</button>
-            <button disabled={renderBusy} onClick={() => queueRender(active.scenes.map(scene => scene.id))}><Clapperboard size={14} /> GENERATE ALL</button>
-            <button disabled={renderBusy} className="primary" onClick={autoPipeline}><WandSparkles size={14} /> AUTO PIPELINE</button>
-            <button onClick={exportFlowPrompts}><Download size={14} /> EXPORT FLOW PROMPTS</button><button onClick={exportProject}><Download size={14} /> EXPORT PROJECT</button>
+            <button onClick={async () => setActive(await api.analyzeFilmProject(active.id))}><Sparkles size={14} /> PHÂN TÍCH KỊCH BẢN</button>
+            <button disabled={consistencyBusy} onClick={checkContinuity}>{consistencyBusy ? <Loader2 className="spin" size={14} /> : <AlertTriangle size={14} />} {consistencyBusy ? 'ĐANG KIỂM TRA RULE + AI' : 'KIỂM TRA TÍNH NHẤT QUÁN'}</button>
+            <button disabled={consistencyBusy || consistencyStatus !== 'REPAIRABLE'} onClick={repairConsistency}><WandSparkles size={14} /> TỰ ĐỘNG SỬA LỖI NHẤT QUÁN</button>
+            <button disabled={renderBusy || !renderGateReady || (!selectedForRender.length && !activeSceneId)} onClick={() => queueRender(selectedForRender.length ? selectedForRender : (activeSceneId ? [activeSceneId] : []))}><Play size={14} /> TẠO CÁC CẢNH ĐÃ CHỌN</button>
+            <button disabled={renderBusy || !renderGateReady} onClick={() => queueRender(active.scenes.map(scene => scene.id))}><Clapperboard size={14} /> TẠO TOÀN BỘ PHÂN CẢNH</button>
+            <button disabled={renderBusy || productionBusy || consistencyBusy} className="primary" onClick={autoPipeline}><WandSparkles size={14} /> TẠO PHIM TỰ ĐỘNG</button>
+            <button onClick={exportFlowPrompts}><Download size={14} /> XUẤT LỆNH GOOGLE FLOW</button><button onClick={exportProject}><Download size={14} /> XUẤT DỰ ÁN</button>
           </div>
         </div>
       )}

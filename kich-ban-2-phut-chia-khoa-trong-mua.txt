@@ -1,0 +1,426 @@
+﻿CINEMATIC CONSISTENCY SCRIPT V1
+FINAL_GATE: PASS
+
+================================================================
+META
+================================================================
+FORMAT: CINEMATIC CONSISTENCY SCRIPT V1
+TITLE: Chìa khóa trong mưa
+TARGET_RUNTIME_SEC: 120
+LANGUAGE: vi-VN
+VISUAL_STYLE: Cinematic photorealistic, warm tungsten + cool rain blues, shallow depth of field, handheld intimacy + locked-off inserts
+ASPECT_RATIO: 16:9
+PURPOSE: Short film for AI Film Studio continuity analysis and multi-clip render
+GENRE: Drama / Quiet magical realism
+THEME: A delayed letter reconnects the living with love that never left
+SYNOPSIS: Một đêm mưa ở phố cổ, Lan mang bức thư cuối cùng của người vợ đã mất đến ông Hải. Trong thư có chìa khóa mở hộp nhạc cũ. Hai người không ôm nhau vội; họ chỉ đứng cạnh nhau khi hộp nhạc vang lên và mưa dịu lại.
+
+================================================================
+CHARACTER_BIBLE
+================================================================
+CHAR_001:
+  id: CHAR_001
+  name: Lan
+  gender: nữ
+  age: 28
+  appearance: khuôn mặt nhỏ gọn, da sáng, mắt nâu đen, tóc đen ngang vai thẳng, không trang điểm đậm
+  clothing: áo mưa dài màu xanh đen bóng nước, áo len xám bên trong, quần jean tối, giày sneaker trắng bẩn mưa
+  accessories: balo vải nhỏ màu be đeo một bên vai; tai nghe không dây chỉ đeo một bên khi chạy
+  signature_traits: nắm chặt phong bì khi căng thẳng; hít sâu trước khi nói
+  personality: thẳng thắn, dịu dàng, hơi vội nhưng không vô cảm
+  movement: bước nhanh, hơi cúi đầu tránh mưa; khi vào nhà thì chậm lại rõ rệt
+  identity_lock: FIXED — không đổi tóc/áo/độ tuổi trừ khi story ghi rõ (không đổi trong kịch bản này)
+
+CHAR_002:
+  id: CHAR_002
+  name: Ông Hải
+  gender: nam
+  age: 72
+  appearance: tóc bạc ngắn gọn, râu trắng mỏng, da rám nhẹ, vai hơi gù
+  clothing: cardigan be, áo sơ mi trắng bên trong, quần kaki nâu, dép trong nhà màu nâu
+  accessories: kính đọc sách gọng kim loại mỏng; đồng hồ dây da cũ ở tay trái
+  signature_traits: xoa mép kính bằng khăn tay trước khi đọc; đứng gần cửa sổ khi suy nghĩ
+  personality: trầm, lịch sự, dễ xúc động nhưng kiềm chế
+  movement: bước chậm, đặt tay lên thành ghế khi đứng dậy
+  identity_lock: FIXED
+
+================================================================
+LOCATION_BIBLE
+================================================================
+LOC_001:
+  id: LOC_001
+  name: Ngõ phố cổ mưa tối
+  type: exterior urban alley
+  architecture: nhà ống 2–3 tầng, tường vàng cũ, biển hiệu gỗ mờ
+  space: ngõ hẹp 2.5m, lát đá ướt phản chiếu đèn
+  interior: n/a
+  objects: thùng xốp xếp bên tường trái; xe máy dựng sát tường phải; đèn sodium vàng
+  colors: vàng ẩm, xanh mưa, xám đá
+  lighting: đèn đường sodium + ánh sáng cửa sổ tầng 2
+  time_of_day: tối sớm, khoảng 19:10
+  weather: mưa vừa, có gió nhẹ
+  layout: lối vào ngõ ở phía camera sau; cửa nhà ông Hải là cánh gỗ nâu thứ ba bên trái khi nhìn vào sâu ngõ
+  layout_lock: FIXED
+
+LOC_002:
+  id: LOC_002
+  name: Phòng khách nhà ông Hải
+  type: interior apartment living room
+  architecture: trần thấp, tường kem, cửa sổ gỗ mở ra ngõ
+  space: 4x5m, bàn trà giữa, ghế bành gần cửa sổ, kệ sách tường phải
+  interior: thảm dệt cũ dưới bàn; đồng hồ treo tường trái
+  objects: hộp nhạc gỗ trên kệ sách (khóa); ấm trà trên bàn; khăn tay gấp trên ghế
+  colors: kem ấm, gỗ nâu, ánh vàng tungsten
+  lighting: đèn bàn ấm + ánh mưa xanh lọt cửa sổ
+  time_of_day: tối sớm, liên tục từ LOC_001
+  weather: mưa ngoài cửa sổ (nhìn thấy qua kính)
+  layout: cửa vào từ ngõ ở tường sau; cửa sổ tường trước; kệ sách tường phải; bàn trà trung tâm; ghế bành góc cửa sổ trái
+  layout_lock: FIXED
+
+================================================================
+PROP_BIBLE
+================================================================
+PROP_001:
+  id: PROP_001
+  name: Phong bì thư cuối
+  description: phong bì kraft A5, góc hơi ướt mưa, chữ viết tay mực xanh "Cho Hải"
+  owner_initial: CHAR_001
+  state_initial: sealed, damp corner, held in Lan's right hand under raincoat flap
+  transfer_rules: chỉ chuyển khi được khai báo trong scene
+
+PROP_002:
+  id: PROP_002
+  name: Chìa khóa đồng nhỏ
+  description: chìa khóa đồng dài ~4cm, dây chỉ đỏ buộc vòng
+  owner_initial: INSIDE_PROP_001
+  state_initial: hidden inside sealed letter until opened
+  transfer_rules: xuất hiện khi mở thư; sau đó thuộc CHAR_002
+
+PROP_003:
+  id: PROP_003
+  name: Hộp nhạc gỗ
+  description: hộp gỗ óc chó chữ nhật, nắp có khóa nhỏ, hoa văn đơn giản
+  owner_initial: LOC_002 (on bookshelf)
+  state_initial: locked, closed, on right bookshelf middle shelf
+  transfer_rules: không đổi vị trí kệ; chỉ mở nắp khi dùng PROP_002
+
+PROP_004:
+  id: PROP_004
+  name: Khăn tay trắng
+  description: khăn cotton trắng đã ủi, góc thêu chữ H nhỏ
+  owner_initial: CHAR_002
+  state_initial: folded on armchair armrest
+  transfer_rules: CHAR_002 có thể cầm để lau kính/mắt
+
+================================================================
+TIMELINE
+================================================================
+1. Lan chạy trong ngõ mưa mang PROP_001 → LOC_001 | CHAR_001 | 0:00–0:16
+2. Lan gõ cửa, ông Hải mở cửa → LOC_001 threshold / vào LOC_002 | CHAR_001, CHAR_002 | 0:16–0:32
+3. Trao thư, mở thư, lấy chìa → LOC_002 | CHAR_001, CHAR_002 | 0:32–0:72
+4. Mở hộp nhạc, lắng nghe, mưa dịu → LOC_002 | CHAR_001, CHAR_002 | 0:72–2:00
+
+================================================================
+SCENES (total duration = 120s)
+================================================================
+
+SCENE_001
+PREVIOUS_SCENE: null
+NEXT_SCENE: SCENE_002
+duration_sec: 8
+location_id: LOC_001
+characters_onscreen: [CHAR_001]
+props_present: [PROP_001]
+prop_transfers: []
+action: Lan chạy vào ngõ mưa, một tay kéo mũ áo mưa, tay kia giữ PROP_001 sát ngực dưới vạt áo. Nước bắn lên sneaker trắng.
+camera: tracking medium shot phía sau hơi lệch phải, 35mm feel, di chuyển theo nhịp bước.
+lighting: sodium street lamp + wet reflections
+atmosphere: gấp gáp, mưa lạnh, hơi thở trắng mỏng
+dialogue: []
+voiceover: ""
+START_STATE: CHAR_001 standing at alley entrance under rain; PROP_001 sealed in right hand under coat; LOC_001 raining medium.
+END_STATE: CHAR_001 mid-alley facing deeper into corridor; PROP_001 still sealed in CHAR_001 right hand; rain continuous.
+
+SCENE_002
+PREVIOUS_SCENE: SCENE_001
+NEXT_SCENE: SCENE_003
+duration_sec: 8
+location_id: LOC_001
+characters_onscreen: [CHAR_001]
+props_present: [PROP_001]
+prop_transfers: []
+action: Lan dừng trước cánh gỗ nâu thứ ba bên trái, hít sâu, nhìn số nhà mờ nước, rồi giơ tay gõ cửa ba nhịp chắc.
+camera: over-shoulder to door, then push-in to hand knocking.
+lighting: same sodium + spill from upstairs windows
+atmosphere: hồi hộp, mưa vẫn đều
+dialogue: []
+voiceover: ""
+START_STATE: CHAR_001 mid-alley approaching third brown wooden door on left; PROP_001 sealed in CHAR_001 right hand; rain continuous.
+END_STATE: CHAR_001 at door, left hand just finished third knock; PROP_001 still sealed in right hand; door still closed.
+
+SCENE_003
+PREVIOUS_SCENE: SCENE_002
+NEXT_SCENE: SCENE_004
+duration_sec: 8
+location_id: LOC_001
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_001]
+prop_transfers: []
+action: Cửa mở một khoảng. Ông Hải xuất hiện trong cardigan be và dép trong nhà, kính đọc sách trên sống mũi. Lan cúi chào nhanh. Hai người đứng ở ngưỡng cửa; mưa phía sau Lan.
+camera: medium two-shot from inside looking out, then reverse medium on Lan.
+lighting: warm tungsten from interior vs cool rain behind Lan
+atmosphere: lịch sự, ngập ngừng
+dialogue:
+  - character_id: CHAR_001
+    text: "Cháu… mang thư cho bác ạ."
+    emotion: nervous-gentle
+voiceover: ""
+START_STATE: Door closed; CHAR_001 waiting outside with PROP_001 sealed; CHAR_002 not yet visible.
+END_STATE: Door open; CHAR_002 in doorway looking at CHAR_001; PROP_001 still with CHAR_001; both at threshold of LOC_001↔LOC_002.
+
+SCENE_004
+PREVIOUS_SCENE: SCENE_003
+NEXT_SCENE: SCENE_005
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_001, PROP_003, PROP_004]
+prop_transfers: []
+action: Ông Hải bước lùi mời vào. Lan bước vào, khẽ phủi nước trên tay áo mưa nhưng không cởi áo. Ông Hải đóng cửa. Âm mưa giảm thành tiếng nền sau kính.
+camera: tracking from doorway into living room, wide establishing of LOC_002 layout.
+lighting: warm lamp + cool window rain light
+atmosphere: ấm hơn nhưng vẫn căng
+dialogue:
+  - character_id: CHAR_002
+    text: "Vào đi, cháu. Ngoài đó ướt lắm."
+    emotion: soft-welcoming
+voiceover: ""
+START_STATE: Both at open doorway; PROP_001 with CHAR_001; PROP_003 locked on right bookshelf; PROP_004 folded on armchair.
+END_STATE: Door closed; CHAR_001 and CHAR_002 inside LOC_002 near center table; PROP_001 still with CHAR_001; layout unchanged.
+
+SCENE_005
+PREVIOUS_SCENE: SCENE_004
+NEXT_SCENE: SCENE_006
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_001, PROP_003, PROP_004]
+prop_transfers:
+  - prop_id: PROP_001
+    source_owner: CHAR_001
+    target_owner: CHAR_002
+    moment: Lan đặt phong bì lên hai tay ông Hải
+action: Lan đưa PROP_001. Ông Hải nhận bằng hai tay, nhìn chữ viết tay, hơi cứng người.
+camera: close-up hands exchange, then CU on envelope text "Cho Hải".
+lighting: warm key on hands
+atmosphere: trang trọng, im lặng dày
+dialogue:
+  - character_id: CHAR_001
+    text: "Bác gái nhờ cháu… nếu có ngày phải trao."
+    emotion: careful
+voiceover: ""
+START_STATE: PROP_001 held by CHAR_001; CHAR_002 facing her near table; PROP_003 locked on shelf.
+END_STATE: PROP_001 now held by CHAR_002 with both hands; CHAR_001 standing opposite; PROP_003 still locked.
+
+SCENE_006
+PREVIOUS_SCENE: SCENE_005
+NEXT_SCENE: SCENE_007
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_001, PROP_003, PROP_004]
+prop_transfers: []
+action: Ông Hải ngồi xuống ghế bành cửa sổ, đặt PROP_001 lên đùi, lấy PROP_004 lau kính rồi mở phong bì cẩn thận. Lan đứng yên, không nhìn quá gần.
+camera: medium on CHAR_002 by window, shallow DOF; Lan soft background.
+lighting: window rain backlight + lamp fill
+atmosphere: chậm, kính trọng
+dialogue: []
+voiceover: ""
+START_STATE: PROP_001 sealed in CHAR_002 hands; PROP_004 on armchair; both in LOC_002.
+END_STATE: PROP_001 opened (flap up); letter paper visible in CHAR_002 hands; PROP_004 held briefly then set on armrest; PROP_002 still not revealed.
+
+SCENE_007
+PREVIOUS_SCENE: SCENE_006
+NEXT_SCENE: SCENE_008
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_001, PROP_002, PROP_003, PROP_004]
+prop_transfers:
+  - prop_id: PROP_002
+    source_owner: INSIDE_PROP_001
+    target_owner: CHAR_002
+    moment: chìa khóa rơi ra khỏi giấy thư vào lòng bàn tay ông Hải
+action: Ông Hải đọc vài dòng (không đọc to). PROP_002 trượt ra. Ông Hải nhìn chìa khóa, nuốt nước bọt.
+camera: ECU key on palm, then tilt to his eyes behind glasses.
+lighting: warm specular on brass key
+atmosphere: xúc động kiềm chế
+dialogue: []
+voiceover: "Nếu anh còn giữ hộp nhạc… chìa này sẽ mở đúng chỗ em từng khóa."
+START_STATE: Open letter in CHAR_002 hands; PROP_002 still inside letter; PROP_003 locked on shelf.
+END_STATE: PROP_002 in CHAR_002 right palm; open letter in left hand; PROP_003 still locked; CHAR_001 watching quietly.
+
+SCENE_008
+PREVIOUS_SCENE: SCENE_007
+NEXT_SCENE: SCENE_009
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_001, PROP_002, PROP_003, PROP_004]
+prop_transfers: []
+action: Ông Hải đứng dậy chậm, bước đến kệ sách tường phải, với tay lấy PROP_003 ở tầng giữa. Lan hơi nghiêng người theo nhưng không chạm.
+camera: tracking lateral following CHAR_002 to bookshelf; insert of locked music box.
+lighting: lamp warm on wood grain
+atmosphere: nghi lễ nhỏ
+dialogue:
+  - character_id: CHAR_002
+    text: "Ba mươi năm… anh vẫn không nỡ mở."
+    emotion: quiet regret
+voiceover: ""
+START_STATE: PROP_002 in CHAR_002 hand; PROP_003 locked on middle shelf; CHAR_001 near table.
+END_STATE: PROP_003 held by CHAR_002 at chest height; PROP_002 still in his other hand; both still in LOC_002; shelf gap visible where box was.
+
+SCENE_009
+PREVIOUS_SCENE: SCENE_008
+NEXT_SCENE: SCENE_010
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_002, PROP_003]
+prop_transfers: []
+action: Ông Hải đặt PROP_003 lên bàn trà. Đưa PROP_002 vào ổ khóa, xoay một vòng. Nắp hộp mở nhẹ. Bên trong lộ cơ quan nhạc nhỏ sáng đồng.
+camera: top-down insert lock turning; then 3/4 angle box opening.
+lighting: practical lamp catching brass mechanism
+atmosphere: nín thở
+dialogue: []
+voiceover: ""
+START_STATE: PROP_003 closed/locked in CHAR_002 hands moving to table; PROP_002 ready as key.
+END_STATE: PROP_003 open on table; PROP_002 still in lock; mechanism visible; CHAR_001 and CHAR_002 leaning in slightly.
+
+SCENE_010
+PREVIOUS_SCENE: SCENE_009
+NEXT_SCENE: SCENE_011
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_002, PROP_003]
+prop_transfers: []
+action: Ông Hải vặn chốt lên dây cót. Giai điệu nhỏ vang. Ông nhắm mắt một nhịp. Lan mỉm cười buồn, mắt ướt nhưng không khóc òa.
+camera: slow push-in two-shot; micro insert of rotating cylinder.
+lighting: warmer practical, rain light softer at window
+atmosphere: dịu, day dứt đẹp
+dialogue: []
+voiceover: ""
+START_STATE: Open PROP_003 on table; music not yet playing.
+END_STATE: Music playing; both still; PROP_002 remains in lock; expressions softened.
+
+SCENE_011
+PREVIOUS_SCENE: SCENE_010
+NEXT_SCENE: SCENE_012
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_002, PROP_003, PROP_004]
+prop_transfers: []
+action: Ông Hải lấy PROP_004 lau khóe mắt. Lan nhìn ra cửa sổ — mưa ngoài ngõ thưa hơn. Không ai nói nhiều.
+camera: shot-reverse-shot CU faces; cutaway to rain thinning on window glass.
+lighting: contrast giảm, mưa ngoài bớt dày
+atmosphere: giải tỏa nhẹ
+dialogue:
+  - character_id: CHAR_001
+    text: "Bác gái bảo… chỉ cần bác nghe một lần."
+    emotion: tender
+voiceover: ""
+START_STATE: Music playing; both near table; rain still visible outside.
+END_STATE: Music still playing softer; CHAR_002 holding PROP_004 near face then lowering; rain visibly lighter on glass.
+
+SCENE_012
+PREVIOUS_SCENE: SCENE_011
+NEXT_SCENE: SCENE_013
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_002, PROP_003]
+prop_transfers: []
+action: Ông Hải khẽ gật. Đặt tay lên nắp hộp nhưng không đóng. Lan chỉnh balo, sẵn sàng cáo từ nhưng chưa bước.
+camera: medium wide including window and table composition locked to LOC_002 layout.
+lighting: balanced warm interior
+atmosphere: chấp nhận, bình yên mới
+dialogue:
+  - character_id: CHAR_002
+    text: "Cảm ơn cháu… đã đến đúng lúc."
+    emotion: grateful-calm
+voiceover: ""
+START_STATE: Continuity from SCENE_011; music fading but box still open.
+END_STATE: Music nearly ended; PROP_003 still open on table; CHAR_001 oriented toward door but still inside; CHAR_002 near window side of table.
+
+SCENE_013
+PREVIOUS_SCENE: SCENE_012
+NEXT_SCENE: SCENE_014
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_001, CHAR_002]
+props_present: [PROP_001, PROP_002, PROP_003]
+prop_transfers: []
+action: Lan mở cửa. Tiếng mưa ngoài rất nhẹ. Ông Hải đứng ở hậu cảnh cạnh bàn, hộp nhạc vẫn mở. Lan quay lại nhìn một lần.
+camera: from outside threshold looking in (match LOC_001/002 junction), then CU Lan's glance back.
+lighting: cooler alley spill mixes with warm room
+atmosphere: tạm biệt không nặng
+dialogue: []
+voiceover: ""
+START_STATE: CHAR_001 inside near door; CHAR_002 by table; PROP_003 open.
+END_STATE: Door open; CHAR_001 on threshold facing out; CHAR_002 still inside by table; PROP_003 open; PROP_002 in lock.
+
+SCENE_014
+PREVIOUS_SCENE: SCENE_013
+NEXT_SCENE: SCENE_015
+duration_sec: 8
+location_id: LOC_001
+characters_onscreen: [CHAR_001]
+props_present: []
+prop_transfers: []
+action: Lan bước ra ngõ. Mưa chỉ còn lất phất. Đèn sodium phản trên đá ướt. Cô không chạy nữa — đi bộ đều về phía miệng ngõ.
+camera: tracking front three-quarter, calmer pace than SCENE_001.
+lighting: sodium + residual wet sheen
+atmosphere: nhẹ nhõm, khoảng trống được lấp
+dialogue: []
+voiceover: ""
+START_STATE: CHAR_001 exiting to LOC_001; light drizzle; no PROP_001 (left with CHAR_002 earlier as opened letter remains inside).
+END_STATE: CHAR_001 mid-alley walking toward entrance; drizzle; door behind her still ajar with warm spill.
+
+SCENE_015
+PREVIOUS_SCENE: SCENE_014
+NEXT_SCENE: null
+duration_sec: 8
+location_id: LOC_002
+characters_onscreen: [CHAR_002]
+props_present: [PROP_002, PROP_003, PROP_001]
+prop_transfers: []
+action: Trong nhà, ông Hải đứng cạnh cửa sổ, nhìn ra ngõ nơi Lan vừa đi. Hộp nhạc hết dây, nắp vẫn mở. Ông để tay trên gỗ hộp, mỉm cười rất nhỏ.
+camera: locked-off medium by window matching Location Bible layout; slow fade intention on end frame.
+lighting: warm lamp, almost no rain streaks
+atmosphere: kết thúc mở, ấm
+dialogue: []
+voiceover: "Có những chìa khóa… chỉ mở được khi đã sẵn sàng nhớ."
+START_STATE: CHAR_002 alone in LOC_002 at window; PROP_003 open on table; PROP_002 in lock; opened PROP_001 papers on table edge.
+END_STATE: Same positions; music stopped; soft smile held; rain outside nearly gone — FINAL FRAME.
+
+================================================================
+CONTINUITY_AUDIT
+================================================================
+- Character IDs used only from Bible: CHAR_001, CHAR_002 — PASS
+- Location IDs used only from Bible: LOC_001, LOC_002 — PASS
+- Prop IDs used only from Bible: PROP_001..PROP_004 — PASS
+- No prop/object used as dialogue speaker — PASS
+- All dialogue speakers onscreen in their scenes — PASS
+- Clothing/hair/age locked for both characters — PASS
+- LOC layouts unchanged across scenes — PASS
+- PROP_001 transfer SCENE_005 source CHAR_001 → target CHAR_002 — PASS
+- PROP_002 reveal SCENE_007 INSIDE_PROP_001 → CHAR_002 — PASS
+- PROP_003 remains owned by space then handled by CHAR_002 without teleport — PASS
+- END_STATE Scene N matches START_STATE Scene N+1 for positions/props/weather progression — PASS
+- Duration sum: 15 × 8s = 120s — PASS
+- Voiceover length fits ~8s beats (short lines only) — PASS
+- No extra entities invented mid-scene — PASS
+
+FINAL_GATE: PASS

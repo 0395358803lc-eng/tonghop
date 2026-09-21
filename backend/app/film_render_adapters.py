@@ -1,5 +1,9 @@
 import os
+import re
 import httpx
+
+from .flow_bridge_client import render_flow_video
+from .flow_store import get_flow_settings
 
 
 class RenderAdapterError(RuntimeError):
@@ -57,8 +61,32 @@ class HttpJsonRenderAdapter(BaseRenderAdapter):
         }
 
 
+class FlowBridgeRenderAdapter(BaseRenderAdapter):
+    id = 'flow_bridge'
+    name = 'Google Flow · Local Session Bridge'
+
+    @property
+    def configured(self) -> bool:
+        cfg = get_flow_settings()
+        return bool(cfg and cfg.get('enabled') and cfg.get('bridge_url') and cfg.get('api_key'))
+
+    async def render(self, payload: dict) -> dict:
+        if not self.configured:
+            raise RenderAdapterError('Flow Bridge chưa được cấu hình hoặc chưa bật.')
+        try:
+            return await render_flow_video(payload)
+        except Exception as exc:
+            message = str(exc)
+            if re.match(r'^[A-Z][A-Z0-9_]+:\s*', message):
+                raise RenderAdapterError(message) from exc
+            raise RenderAdapterError(f'FLOW_RUNTIME_ERROR: Flow Bridge render thất bại: {message}') from exc
+
+
 def get_active_adapter() -> BaseRenderAdapter:
     selected = os.getenv('FILM_RENDER_ADAPTER', '').strip().lower()
+    flow = FlowBridgeRenderAdapter()
+    if selected in {'flow', 'flow_bridge'} or (not selected and flow.configured):
+        return flow
     if selected in {'http', 'http_json', 'custom_http'} or os.getenv('FILM_RENDER_API_URL', '').strip():
         return HttpJsonRenderAdapter()
     return BaseRenderAdapter()
@@ -70,6 +98,6 @@ def get_adapter_status() -> dict:
         'id': adapter.id,
         'name': adapter.name,
         'configured': adapter.configured,
-        'supports_reference_frame': adapter.id == 'http_json',
-        'contract': 'POST JSON -> result_url/video_url/url' if adapter.id == 'http_json' else None,
+        'supports_reference_frame': adapter.id in {'http_json', 'flow_bridge'},
+        'contract': ('Flow Bridge submit/poll/result' if adapter.id == 'flow_bridge' else 'POST JSON -> result_url/video_url/url' if adapter.id == 'http_json' else None),
     }

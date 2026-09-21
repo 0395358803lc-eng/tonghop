@@ -18,6 +18,11 @@ app.include_router(router)
 @app.on_event("startup")
 def startup():
     init_db()
+    try:
+        from .film_recovery_service import reconcile_all
+        reconcile_all()
+    except Exception:
+        pass
 
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
