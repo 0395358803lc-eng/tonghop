@@ -1,6 +1,7 @@
 import unittest
 
 from .db import init_db
+from .film_acceptance_snapshot import _voice_ids_for_scene
 from .film_audio_schema import normalize_audio_requirements
 from .film_compiler import compile_flow_prompt
 from .film_qc_service import _speaker_status_requires_block
@@ -24,6 +25,12 @@ class VoiceContractTests(unittest.TestCase):
             {"characters": [{"id": "CHAR_001", "name": "An"}]},
         )
         self.assertEqual(req["speakers"], ["CHAR_001", "NARRATOR"])
+    def test_voiceover_adds_narrator_to_snapshot_voice_ids(self):
+        voice_ids = _voice_ids_for_scene(
+            {"characters": ["CHAR_002"], "voiceover": "Loi dan"}
+        )
+        self.assertEqual(voice_ids, {"CHAR_002", "NARRATOR"})
+
     def test_narrator_profile_is_persisted(self):
         project = create_film_project(
             "__voice_narrator__",

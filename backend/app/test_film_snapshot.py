@@ -191,6 +191,21 @@ class SnapshotTests(unittest.TestCase):
         from .film_scene_state_store import get_scene_state
         self.assertEqual(get_scene_state(self.pid, "SCENE_001")["status"], "STALE")
 
+    def test_narrator_voice_change_marks_voiceover_scene_stale(self):
+        self._approve("SCENE_001", 0)
+        project = {
+            "id": self.pid,
+            "scenes": [
+                {"id": "SCENE_001", "characters": [], "voiceover": "Loi dan"},
+                {"id": "SCENE_002", "characters": ["CHAR_001"], "voiceover": ""},
+            ],
+        }
+        with patch("app.film_acceptance_snapshot.get_film_project", return_value=project):
+            changed = propagate_voice_change(self.pid, "NARRATOR")
+        self.assertEqual(len(changed), 1)
+        from .film_scene_state_store import get_scene_state
+        self.assertEqual(get_scene_state(self.pid, "SCENE_001")["status"], "STALE")
+
     def test_scene_stale_marks_junction_stale(self):
         self._approve("SCENE_001", 0)
         self._approve("SCENE_002", 1)

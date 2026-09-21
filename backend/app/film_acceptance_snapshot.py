@@ -74,6 +74,13 @@ def _selected_video(project_id: str, scene_id: str, state: dict | None = None):
     return selected
 
 
+def _voice_ids_for_scene(scene: dict) -> set[str]:
+    voice_ids = {str(x) for x in (scene.get("characters") or [])}
+    if str(scene.get("voiceover") or "").strip():
+        voice_ids.add("NARRATOR")
+    return voice_ids
+
+
 def current_fingerprint(project_id: str, scene_id: str) -> dict:
     project = get_film_project(project_id) or {}
     scene = _scene_of(project, scene_id)
@@ -98,8 +105,9 @@ def current_fingerprint(project_id: str, scene_id: str) -> dict:
             "media_id": meta.get("media_id") or meta.get("selected_media_id"),
         })
     voices = []
+    voice_ids = _voice_ids_for_scene(scene)
     for profile in list_voice_profiles(project_id):
-        if str(profile.get("character_id")) in used_ids:
+        if str(profile.get("character_id")) in voice_ids:
             voices.append({
                 "character_id": profile.get("character_id"),
                 "provider_voice_id": profile.get("provider_voice_id"),
@@ -288,7 +296,8 @@ def propagate_voice_change(project_id: str, character_id: str) -> list[dict]:
     project = get_film_project(project_id) or {}
     for scene in project.get("scenes") or []:
         chars = {str(x) for x in (scene.get("characters") or [])}
-        if cid not in chars:
+        narrator_used = cid == "NARRATOR" and bool(str(scene.get("voiceover") or "").strip())
+        if cid not in chars and not narrator_used:
             continue
         state = get_scene_state(project_id, scene["id"]) or {}
         if state.get("status") == "APPROVED":
