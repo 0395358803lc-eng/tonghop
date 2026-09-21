@@ -131,7 +131,11 @@ def current_fingerprint(project_id: str, scene_id: str) -> dict:
     }
 
 
-def build_snapshot_payload(project_id: str, scene_id: str) -> dict:
+def build_snapshot_payload(
+    project_id: str,
+    scene_id: str,
+    policy_revalidation: dict | None = None,
+) -> dict:
     project = get_film_project(project_id) or {}
     scene = _scene_of(project, scene_id)
     state = get_scene_state(project_id, scene_id) or {}
@@ -164,11 +168,16 @@ def build_snapshot_payload(project_id: str, scene_id: str) -> dict:
         "audio_requirements": print_fp.get("audio_requirements") or {},
         "dialogue": print_fp.get("dialogue") or [],
         "fingerprint": snapshot_hash(print_fp),
+        "policy_revalidation": dict(policy_revalidation or {}),
     }
 
 
-def create_acceptance_snapshot(project_id: str, scene_id: str) -> dict:
-    payload = build_snapshot_payload(project_id, scene_id)
+def create_acceptance_snapshot(
+    project_id: str,
+    scene_id: str,
+    policy_revalidation: dict | None = None,
+) -> dict:
+    payload = build_snapshot_payload(project_id, scene_id, policy_revalidation=policy_revalidation)
     digest = snapshot_hash(payload)
     payload["snapshot_hash"] = digest
     now = _now()
