@@ -1,7 +1,7 @@
 import unittest
 
 from .app import _classify_error
-from .browser import canonical_video_model_variants, model_selection_variants
+from .browser import canonical_video_model_variants, classify_flow_generation_error_text, model_selection_variants
 
 
 class VideoSelectorLogicTests(unittest.TestCase):
@@ -35,6 +35,36 @@ class VideoSelectorLogicTests(unittest.TestCase):
         self.assertEqual(
             _classify_error(RuntimeError("Không tìm thấy model Flow 'Veo X'.")),
             "CAPABILITY_MISMATCH",
+        )
+
+    def test_policy_error_tile_is_classified_immediately(self):
+        text = (
+            "Không thành công Câu lệnh này có thể vi phạm chính sách của chúng tôi "
+            "về việc tạo video liên quan đến người nổi tiếng. Bạn chưa bị tính phí."
+        )
+        self.assertEqual(
+            classify_flow_generation_error_text(text),
+            ("FLOW_POLICY_BLOCKED", text),
+        )
+        self.assertEqual(
+            _classify_error(RuntimeError(f"FLOW_POLICY_BLOCKED: {text}")),
+            "FLOW_POLICY_BLOCKED",
+        )
+
+    def test_generic_error_tile_is_generation_failed(self):
+        text = "Không thành công Vui lòng thử lại."
+        self.assertEqual(
+            classify_flow_generation_error_text(text),
+            ("FLOW_GENERATION_FAILED", text),
+        )
+        self.assertEqual(
+            _classify_error(RuntimeError(f"FLOW_GENERATION_FAILED: {text}")),
+            "FLOW_GENERATION_FAILED",
+        )
+
+    def test_non_error_tile_text_is_ignored(self):
+        self.assertIsNone(
+            classify_flow_generation_error_text("Video · 720p · 8 giây")
         )
 
 

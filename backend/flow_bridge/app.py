@@ -89,6 +89,16 @@ def _classify_error(exc: Exception) -> str:
         return "GENERATION_TIMEOUT"
     if "audio_generation_failed" in message or "không tạo được audio" in message:
         return "AUDIO_GENERATION_FAILED"
+    if (
+        "flow_policy_blocked" in message
+        or "vi phạm chính sách" in message
+        or "người nổi tiếng" in message
+        or "public figure" in message
+        or "policy violation" in message
+    ):
+        return "FLOW_POLICY_BLOCKED"
+    if "flow_generation_failed" in message:
+        return "FLOW_GENERATION_FAILED"
     if "không đủ tín dụng" in message or "not enough credits" in message or "credits_insufficient" in message:
         return "FLOW_CREDITS_INSUFFICIENT"
     if "download" in message or "tải xuống" in message or "file video" in message:

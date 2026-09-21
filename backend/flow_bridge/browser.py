@@ -20,6 +20,33 @@ class FlowBrowserError(RuntimeError):
     pass
 
 
+def classify_flow_generation_error_text(text: str | None) -> tuple[str, str] | None:
+    raw = " ".join(str(text or "").split()).strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    policy_markers = (
+        "vi phạm chính sách",
+        "người nổi tiếng",
+        "public figure",
+        "policy violation",
+        "violates our policy",
+        "may violate",
+    )
+    if any(marker in lowered for marker in policy_markers):
+        return "FLOW_POLICY_BLOCKED", raw
+    failure_markers = (
+        "không thành công",
+        "không thể tạo",
+        "couldn't generate",
+        "generation failed",
+        "failed to generate",
+    )
+    if any(marker in lowered for marker in failure_markers):
+        return "FLOW_GENERATION_FAILED", raw
+    return None
+
+
 def classify_flow_session(
     *,
     url: str = "",
@@ -1271,6 +1298,16 @@ class FlowBrowser:
 
             before_icons = self._video_play_icons(page)
             before_videos = await before_icons.count()
+            before_error_tiles = page.locator("flow-error-tile:visible")
+            before_error_count = await before_error_tiles.count()
+            before_error_texts = set()
+            for i in range(before_error_count):
+                try:
+                    text = " ".join((await before_error_tiles.nth(i).inner_text(timeout=2000)).split())
+                    if text:
+                        before_error_texts.add(text)
+                except Exception:
+                    pass
             before_video_srcs = set()
             for i in range(before_videos):
                 try:
@@ -1316,6 +1353,35 @@ class FlowBrowser:
                     raise FlowBrowserError(
                         f"SESSION_EXPIRED: Flow left project page during generation and is now at {page.url}."
                     )
+
+                # Flow renders generation failures as error tiles. Detect only a
+                # tile created/changed after this request, so stale errors from
+                # older attempts do not poison a new generation.
+                try:
+                    error_tiles = page.locator("flow-error-tile:visible")
+                    error_count = await error_tiles.count()
+                    error_texts = []
+                    for i in range(error_count):
+                        raw = " ".join((await error_tiles.nth(i).inner_text(timeout=2000)).split())
+                        if raw:
+                            error_texts.append(raw)
+                    candidates = [
+                        raw for raw in error_texts
+                        if raw not in before_error_texts
+                    ]
+                    if error_count > before_error_count and not candidates:
+                        candidates = error_texts[before_error_count:]
+                    for raw in candidates:
+                        classified = classify_flow_generation_error_text(raw)
+                        if classified:
+                            code, detail = classified
+                            raise FlowBrowserError(f"{code}: {detail[:1600]}")
+                except FlowBrowserError:
+                    raise
+                except Exception:
+                    # DOM reads can transiently fail while Flow updates the tile.
+                    pass
+
                 try:
                     icons = self._video_play_icons(page)
                     current_videos = await icons.count()
