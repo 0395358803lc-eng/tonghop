@@ -361,9 +361,14 @@ def ensure_acceptance_snapshot(project_id: str, scene_id: str) -> dict | None:
     return created
 
 
-def validate_approval_for_snapshot(project_id: str, scene_id: str) -> tuple[bool, str | None]:
+def validate_approval_for_snapshot(
+    project_id: str,
+    scene_id: str,
+    allowed_statuses: set[str] | None = None,
+) -> tuple[bool, str | None]:
     state = get_scene_state(project_id, scene_id) or {}
-    if state.get("status") != "APPROVED":
+    allowed = allowed_statuses or {"APPROVED"}
+    if state.get("status") not in allowed:
         return False, "SCENE_NOT_APPROVED"
     media = _selected_video(project_id, scene_id, state)
     if not media or not media.get("is_selected"):

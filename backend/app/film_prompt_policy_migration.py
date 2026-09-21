@@ -13,7 +13,7 @@ from .film_compiler import compile_flow_prompt
 from .film_integrity import verify_source_lock
 from .film_pipeline_service import pipeline_worker_active
 from .film_production_gate import auto_repair_project_derived, run_production_gate
-from .film_scene_state_store import get_scene_state
+from .film_scene_state_store import get_scene_state, upsert_scene_state
 from .film_speaker_acceptance import run_project_speaker_acceptance
 from .film_store import append_repair_log, get_film_project
 
@@ -123,10 +123,20 @@ def build_prompt_policy_migration_plan(
         )
 
         state = get_scene_state(project_id, sid) or {}
+        recoverable_snapshot_stale = (
+            state.get("status") == "STALE"
+            and (state.get("blocked_reason") or state.get("error")) == "SNAPSHOT_FINGERPRINT_MISMATCH"
+        )
         approval_ok = False
         approval_reason = "SCENE_NOT_APPROVED"
         if state.get("status") == "APPROVED":
             approval_ok, approval_reason = validate_approval_for_snapshot(project_id, sid)
+        elif recoverable_snapshot_stale:
+            approval_ok, approval_reason = validate_approval_for_snapshot(
+                project_id,
+                sid,
+                allowed_statuses={"STALE"},
+            )
 
         scene_policy = policy.get(sid) or {
             "policy": POLICY_VERSION,
@@ -148,6 +158,7 @@ def build_prompt_policy_migration_plan(
             "prompt_changed": old_prompt != new_prompt,
             "approval_ok": bool(approval_ok),
             "approval_reason": approval_reason,
+            "recoverable_snapshot_stale": recoverable_snapshot_stale,
             "policy": scene_policy,
             "action": action,
             "reason": None if keep_media else (
@@ -192,10 +203,23 @@ def rebase_prompt_policy_snapshots(
             )
             if snapshot_fingerprint_mismatch(project_id, sid):
                 raise ValueError(f"PROMPT_POLICY_SNAPSHOT_REBASE_FAILED:{sid}")
+            restored = False
+            if row.get("recoverable_snapshot_stale"):
+                upsert_scene_state(
+                    project_id,
+                    sid,
+                    int(row.get("scene_index") or 0),
+                    status="APPROVED",
+                    blocked_reason=None,
+                    error=None,
+                    force=True,
+                )
+                restored = True
             rebased.append({
                 "scene_id": sid,
                 "snapshot_id": (snapshot or {}).get("id"),
                 "snapshot_hash": (snapshot or {}).get("snapshot_hash"),
+                "restored_approved": restored,
             })
             continue
 
