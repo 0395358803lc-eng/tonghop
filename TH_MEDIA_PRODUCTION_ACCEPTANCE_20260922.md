@@ -198,14 +198,21 @@ Sau restart/recovery phải kiểm tra:
 
 ## 8. Backup quan trọng
 
-Giữ các checkpoint:
+Sau cleanup production, backup lịch sử không còn nằm lẫn trong project. Toàn bộ checkpoint được chuyển ra:
 
-- `.data/backup_post_narrator_tts_v4_20260922_172842.db`
-- `.data/backup_pre_final_v4_qc_reconcile_20260922_172358.db`
-- `.data/backup_post_acceptance_v3_20260922_064659.db`
-- `.data/backup_pre_final_v3_20260922_064229.db`
-- `.data/backup_pre_scene15_attempt3_20260922_061824.db`
-- `.data/backup_pre_junction_014_015_recheck_20260922_063807.db`
+`C:\Users\Admin\Desktop\TH_Media_Archive\project_cleanup_20260922_180042\backups`
+
+Trong đó vẫn giữ các checkpoint quan trọng như:
+
+- `backup_post_narrator_tts_v4_20260922_172842.db`
+- `backup_pre_final_v4_qc_reconcile_20260922_172358.db`
+- `backup_post_acceptance_v3_20260922_064659.db`
+- `backup_pre_final_v3_20260922_064229.db`
+- `backup_pre_scene15_attempt3_20260922_061824.db`
+- `backup_pre_junction_014_015_recheck_20260922_063807.db`
+
+Manifest cleanup nằm tại:
+`C:\Users\Admin\Desktop\TH_Media_Archive\project_cleanup_20260922_180042\cleanup_manifest.json`
 
 Không xóa final media, acceptance snapshots, render failure history, calibration evidence hoặc TTS evidence.
 
@@ -232,17 +239,34 @@ Build sau tối ưu:
 
 Warning main chunk >500 KB trước đây đã được loại bỏ.
 
-## 10. Diagnostic archive
+## 10. Project cleanup / Diagnostic archive
 
-Các script chẩn đoán/acceptance tạm không bị xóa.
+Project đã được cleanup theo nguyên tắc source sạch + runtime tối thiểu.
 
-- **127 script** đã được chuyển vào:
-  `.data/diagnostics_archive/20260922`
-- Giữ tại `.data` root để vận hành:
-  - `audit_recovery_compact.py`
-  - `probe_flow_bridge_runtime.py`
-  - `git_leak_audit.py`
-  - `scan_source_secrets.py`
+Đã thực hiện:
+
+- Backup lịch sử và diagnostic evidence được chuyển ra ngoài project:
+  `C:\Users\Admin\Desktop\TH_Media_Archive\project_cleanup_20260922_180042`
+- `frontend/node_modules` đã xóa; khôi phục bằng `npm ci`.
+- `frontend/dist` đã xóa; tái tạo bằng `npm run build`.
+- `.kilo`, Python `__pycache__`, probe batch cũ và test artifact đã xóa/chuyển archive.
+- `cockie.txt` thừa đã xóa sau khi xác nhận `VIDEO_COOKIES_FILE` không được cấu hình.
+- Log rotated cũ đã chuyển archive; current runtime log vẫn giữ.
+- Chrome Flow profile/session, DB, selected media, final v4, speaker model/calibration và narrator TTS được giữ nguyên vì là runtime production.
+
+Giữ tại `.data` root để vận hành:
+
+- `audit_recovery_compact.py`
+- `probe_flow_bridge_runtime.py`
+- `git_leak_audit.py`
+- `scan_source_secrets.py`
+
+Kết quả cleanup đợt chính:
+
+- Project trước cleanup: **1729.97 MB**
+- Project sau cleanup chính: **1423.82 MB**
+- Dữ liệu rời khỏi project: **306.15 MB**
+- Cleanup errors: **0**
 
 ## 11. Definition of Done
 
