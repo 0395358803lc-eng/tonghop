@@ -30,12 +30,11 @@ def _now() -> str:
 
 def _chrome_exe() -> Path:
     configured = os.getenv("TH_MEDIA_CHROME_PATH")
-    candidates = [
-        Path(configured).expanduser() if configured else None,
-        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-    ]
-    candidates = [path for path in candidates if path is not None]
+    candidates = [Path(configured).expanduser()] if configured else []
+    for env_name in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        base = os.getenv(env_name)
+        if base:
+            candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
     chrome = next((path for path in candidates if path.exists()), None)
     if chrome is None:
         raise RuntimeError("Không tìm thấy Google Chrome trên máy.")
