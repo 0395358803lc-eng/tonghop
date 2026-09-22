@@ -8,7 +8,13 @@ from .film_acceptance_snapshot import mark_final_stale
 from .film_boundary_store import upsert_junction
 from .film_final_assembly import assemble_project, _ffmpeg
 from .film_final_store import update_final_render
-from .film_master_qc import evaluate_master_qc, run_master_qc
+from .film_master_qc import (
+    SILENCE_GAP_MIN_SEC,
+    _parse_silence_durations,
+    _suspicious_silence_seconds,
+    evaluate_master_qc,
+    run_master_qc,
+)
 from .film_media_store import get_media, register_completed_media
 from .film_scene_state_store import upsert_scene_state
 from .film_store import append_film_scenes, create_film_project, delete_film_project
@@ -82,6 +88,23 @@ class MasterQcTests(unittest.TestCase):
         upsert_scene_state(self.pid, "SCENE_002", 1, status="APPROVED", selected_media_id=m2["id"], force=True)
         upsert_junction(self.pid, "SCENE_001", "SCENE_002", status="PASS", selected_previous_media_id=m1["id"], selected_next_media_id=m2["id"])
         return m1, m2
+
+    def test_master_qc_short_natural_pauses_are_not_audio_gap(self):
+        text = (
+            "[silencedetect] silence_duration: 0.422729\n"
+            "[silencedetect] silence_duration: 0.284562\n"
+        )
+        durations = _parse_silence_durations(text)
+        self.assertEqual(durations, [0.422729, 0.284562])
+        self.assertEqual(_suspicious_silence_seconds(durations), 0.0)
+        self.assertGreater(SILENCE_GAP_MIN_SEC, max(durations))
+
+    def test_master_qc_long_contiguous_silence_is_audio_gap(self):
+        durations = [0.31, SILENCE_GAP_MIN_SEC + 0.2, 0.28]
+        self.assertGreater(
+            _suspicious_silence_seconds(durations),
+            0.0,
+        )
 
     def test_master_qc_missing_scene_fail(self):
         self._ready_two()

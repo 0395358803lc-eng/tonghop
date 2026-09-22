@@ -6,8 +6,16 @@ from .film_audio_schema import normalize_audio_requirements
 from .film_media_store import get_selected_media
 from .film_qc_service import _expected_speech_lines, _transcribe_speech_sync
 from .film_speaker_calibration import calibrate_project_speakers
-from .film_speaker_identity import reset_speaker_reference, verify_or_enroll_scene_speaker
+from .film_speaker_identity import load_project_calibration, reset_speaker_reference, verify_or_enroll_scene_speaker
 from .film_store import get_film_project
+
+
+def _acceptance_calibration(project_id: str, recalibrate: bool) -> dict | None:
+    return (
+        calibrate_project_speakers(project_id)
+        if recalibrate
+        else load_project_calibration(project_id)
+    )
 
 
 def run_project_speaker_acceptance(project_id: str, recalibrate: bool = True) -> dict:
@@ -15,7 +23,7 @@ def run_project_speaker_acceptance(project_id: str, recalibrate: bool = True) ->
     if not project:
         raise ValueError("Không tìm thấy dự án phim.")
 
-    calibration = calibrate_project_speakers(project_id) if recalibrate else None
+    calibration = _acceptance_calibration(project_id, recalibrate)
     if calibration:
         speaker_ids = sorted({
             str(item.get("speaker_character_id") or "").strip()

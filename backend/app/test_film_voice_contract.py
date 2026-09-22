@@ -1,10 +1,12 @@
 import unittest
+from unittest.mock import patch
 
 from .db import init_db
 from .film_acceptance_snapshot import _voice_ids_for_scene
 from .film_audio_schema import normalize_audio_requirements
 from .film_compiler import compile_flow_prompt
 from .film_qc_service import _speaker_status_is_unverified, _speaker_status_requires_block
+from .film_speaker_acceptance import _acceptance_calibration
 from .film_store import create_film_project, delete_film_project
 from .film_voice_profile_store import ensure_voice_profiles, get_voice_profile
 
@@ -73,6 +75,19 @@ class VoiceContractTests(unittest.TestCase):
         self.assertIn("VOICE_NARRATOR", prompt)
         self.assertIn("same adult Vietnamese narrator", prompt)
         self.assertEqual(meta["compiler"], "deterministic_flow_prompt_v4_narrator_lock")
+
+    def test_acceptance_uses_persisted_calibration_when_not_recalibrating(self):
+        saved = {"status": "calibrated", "speaker_count": 3}
+        with patch(
+            "app.film_speaker_acceptance.load_project_calibration",
+            return_value=saved,
+        ) as load_saved, patch(
+            "app.film_speaker_acceptance.calibrate_project_speakers",
+        ) as recalibrate:
+            result = _acceptance_calibration("P1", False)
+        self.assertEqual(result, saved)
+        load_saved.assert_called_once_with("P1")
+        recalibrate.assert_not_called()
 
     def test_required_speaker_states_separate_unverified_from_blocked(self):
         self.assertFalse(_speaker_status_requires_block({"status": "passed"}))

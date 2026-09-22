@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from .film_store import get_film_project
 
 BLACK_LIMIT_SEC = 0.4
 SILENCE_HARD_RATIO = 0.9
+SILENCE_GAP_MIN_SEC = float(os.getenv("FILM_MASTER_QC_SILENCE_GAP_MIN_SEC", "0.75"))
 DURATION_TOLERANCE = 1.0
 
 
@@ -34,18 +36,19 @@ def _parse_black(stderr: str) -> float:
     return total
 
 
+def _parse_silence_durations(stderr: str) -> list[float]:
+    return [
+        float(match.group(1))
+        for match in re.finditer(r"silence_duration\s*:\s*([0-9.]+)", stderr or "")
+    ]
+
+
 def _parse_silence(stderr: str) -> float:
-    total = 0.0
-    for match in re.finditer(r"silence_duration\s*:\s*([0-9.]+)", stderr or ""):
-        total += float(match.group(1))
-    starts = [float(x) for x in re.findall(r"silence_start:\s*([0-9.]+)", stderr or "")]
-    ends = [float(x) for x in re.findall(r"silence_end:\s*([0-9.]+)", stderr or "")]
-    if starts and len(ends) < len(starts):
-        # open-ended silence until EOF handled by duration later
-        pass
-    if total:
-        return total
-    return 0.0
+    return sum(_parse_silence_durations(stderr))
+
+
+def _suspicious_silence_seconds(durations: list[float]) -> float:
+    return sum(value for value in durations if value >= SILENCE_GAP_MIN_SEC)
 
 
 def _parse_max_volume(stderr: str) -> float | None:
@@ -67,11 +70,18 @@ def _analyze_media(path: Path, duration: float) -> dict:
         "-af", "volumedetect", "-vn", "-f", "null", "-",
     ])
     black_sec = _parse_black((black.stderr or "") + (black.stdout or ""))
-    silence_sec = _parse_silence((silence.stderr or "") + (silence.stdout or ""))
+    silence_text = (silence.stderr or "") + (silence.stdout or "")
+    silence_durations = _parse_silence_durations(silence_text)
+    silence_sec = sum(silence_durations)
+    max_silence = max(silence_durations, default=0.0)
+    suspicious_silence = _suspicious_silence_seconds(silence_durations)
     max_volume = _parse_max_volume((volume.stderr or "") + (volume.stdout or ""))
     return {
         "black_seconds": round(black_sec, 3),
         "silence_seconds": round(silence_sec, 3),
+        "max_silence_seconds": round(max_silence, 3),
+        "suspicious_silence_seconds": round(suspicious_silence, 3),
+        "silence_gap_threshold_seconds": SILENCE_GAP_MIN_SEC,
         "max_volume_db": max_volume,
         "duration": duration,
     }
@@ -145,10 +155,27 @@ def evaluate_master_qc(project_id: str, render_id: str | None = None) -> dict:
     if audio_missing:
         hard_failed.append("audio_missing")
         issues.append({"code": "AUDIO_MISSING"})
-    gap = has_audio and not audio_missing and silence_sec >= 0.4
-    dimensions["audio_gaps"] = _dim(60 if gap else 95, 70, not gap, False, detail=f"{silence_sec}s")
+    suspicious_silence_sec = float(analysis.get("suspicious_silence_seconds") or 0.0)
+    max_silence_sec = float(analysis.get("max_silence_seconds") or 0.0)
+    gap = has_audio and not audio_missing and max_silence_sec >= SILENCE_GAP_MIN_SEC
+    dimensions["audio_gaps"] = _dim(
+        60 if gap else 95,
+        70,
+        not gap,
+        False,
+        detail=(
+            f"max={max_silence_sec}s suspicious_total={suspicious_silence_sec}s "
+            f"raw_total={silence_sec}s threshold={SILENCE_GAP_MIN_SEC}s"
+        ),
+    )
     if gap:
-        issues.append({"code": "AUDIO_GAP", "detail": f"{silence_sec}s"})
+        issues.append({
+            "code": "AUDIO_GAP",
+            "detail": (
+                f"max={max_silence_sec}s suspicious_total={suspicious_silence_sec}s "
+                f"raw_total={silence_sec}s threshold={SILENCE_GAP_MIN_SEC}s"
+            ),
+        })
     clip = analysis.get("max_volume_db") is not None and analysis["max_volume_db"] >= -0.3
     dimensions["audio_clipping"] = _dim(50 if clip else 95, 70, not clip, False, detail=analysis.get("max_volume_db"))
     source_dur = 0.0
