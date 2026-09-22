@@ -1,5 +1,6 @@
 import type {
   Chat,
+  DesktopReadyStatus,
   FilmConsistencyReport,
   FilmGeneratedMedia,
   FilmMediaList,
@@ -59,6 +60,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  ready: () => request<DesktopReadyStatus>('/api/ready'),
   flowStatus: () => request<FlowStatus>('/api/flow'),
   flowMetrics: () => request<FlowMetrics>('/api/flow/metrics'),
   saveFlow: (bridge_url: string, api_key: string, enabled = true) => request<FlowStatus>('/api/flow', {

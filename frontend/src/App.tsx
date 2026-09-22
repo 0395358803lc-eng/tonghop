@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from './api'
 import type { Chat, FlowMetrics, FlowSavedSession, FlowSessionList, FlowStatus, Message, Provider } from './types'
+import DesktopStatusCenter from './DesktopStatusCenter'
 import './App.css'
 
 const VideoAnalyzer = lazy(() => import('./VideoAnalyzer'))
@@ -360,6 +361,7 @@ function App() {
           <div className="platform-side-list"><span>Story Bible</span><span>Scenes</span><span>Flow Prompt</span></div>
           <div className="chat-list" />
         </>)}
+        <DesktopStatusCenter provider={currentProvider} model={model} />
         <div className="sidebar-footer">
           <button onClick={() => setSettingsOpen(true)}><Settings size={18} /><span>Cài đặt API</span></button>
           <div className="secure-note"><KeyRound size={14} /> Khóa được mã hóa phía server</div>

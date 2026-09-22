@@ -825,3 +825,50 @@ export type FilmCapabilityMatrix = {
   items: FilmCapabilityItem[]
   count: number
 }
+
+export type DesktopReadyStatus = {
+  ok: boolean
+  ready: boolean
+  health: boolean
+  checks: {
+    db: boolean
+    event_store: boolean
+    flow_configured: boolean
+    flow_authenticated: boolean
+    capability_matrix_fresh: boolean
+    speaker_verifier_ready: boolean
+  }
+  flow?: {
+    ok?: boolean
+    authenticated?: boolean
+    session?: {
+      authenticated?: boolean
+      account_authenticated?: boolean
+      page_usable?: boolean
+      project_usable?: boolean
+      state?: string
+    }
+    [key: string]: unknown
+  } | null
+  speaker_identity?: {
+    enabled?: boolean
+    required?: boolean
+    model_exists?: boolean
+    provider?: string
+    embedding_strategy?: string
+    [key: string]: unknown
+  } | null
+  runtime?: {
+    desktop_mode?: boolean
+    active_pipelines?: number
+    configured_providers?: string[]
+    configured_provider_count?: number
+  }
+  storage?: {
+    total_bytes: number
+    used_bytes: number
+    free_bytes: number
+    free_gb: number
+    used_percent: number
+  } | null
+}

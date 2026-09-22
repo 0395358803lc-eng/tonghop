@@ -737,3 +737,80 @@
 .film-capability-list article { display:flex; flex-direction:column; gap:2px; padding:8px; border:1px solid var(--border); border-radius:10px; background:#10151e; }
 .film-capability-list strong { color:#efd7b0; font-size:11px; }
 .film-capability-list span, .film-capability-list em { color:#8b93a0; font-size:8px; font-style:normal; }
+
+.desktop-status-center {
+  flex: 0 0 auto;
+  margin: 8px 2px 10px;
+  padding: 9px;
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 10px;
+  background: rgba(255,255,255,.018);
+}
+.desktop-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(255,255,255,.055);
+}
+.desktop-status-head > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #697386;
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: .09em;
+}
+.desktop-status-head b {
+  font-size: 7.5px;
+  font-weight: 700;
+}
+.desktop-status-head b.ok,
+.desktop-status-value.ok { color: #67bd91; }
+.desktop-status-head b.warn,
+.desktop-status-value.warn { color: #d1a15d; }
+.desktop-status-head b.error,
+.desktop-status-value.error { color: #d97878; }
+.desktop-status-head b.muted,
+.desktop-status-value.muted { color: #596273; }
+.desktop-status-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 14px 63px minmax(0,1fr);
+  align-items: center;
+  gap: 4px;
+  min-height: 19px;
+}
+.desktop-status-icon {
+  display: grid;
+  place-items: center;
+  color: #525d70;
+}
+.desktop-status-label {
+  color: #677183;
+  font-size: 8px;
+}
+.desktop-status-value {
+  overflow: hidden;
+  font-size: 8px;
+  font-weight: 700;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desktop-status-pipeline {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 6px 7px;
+  border: 1px solid rgba(214,157,78,.13);
+  border-radius: 7px;
+  color: #c59759;
+  background: rgba(177,115,38,.055);
+  font-size: 7.5px;
+  font-weight: 700;
+}

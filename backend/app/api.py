@@ -1,3 +1,5 @@
+import os
+import shutil
 import uuid
 from pathlib import Path
 
@@ -20,7 +22,7 @@ from .film_production_gate import auto_repair_project_derived, evaluate_producti
 from .film_consistency_v2 import repair_consistency_v2, run_consistency_audit_v2
 from .film_render_service import enqueue_render, pause_render_queue, process_render_queue, render_status, resume_render_queue, retry_render
 from .film_pipeline_service import pause_pipeline, pipeline_status, pipeline_worker_active, process_pipeline, resume_pipeline, retry_scene, start_pipeline, stop_pipeline
-from .film_scene_state_store import get_execution_lease, list_candidates
+from .film_scene_state_store import get_execution_lease, list_active_runs, list_candidates
 from .film_dialogue_service import project_audio_requirements
 from .film_voice_profile_store import ensure_voice_profiles, list_voice_profiles
 from .film_speaker_identity import speaker_identity_status
@@ -89,6 +91,21 @@ async def ready():
         and flow_auth
         and (speaker_ok or not speaker.get("required"))
     )
+
+    storage = None
+    try:
+        usage = shutil.disk_usage(DATA_DIR)
+        storage = {
+            "total_bytes": int(usage.total),
+            "used_bytes": int(usage.used),
+            "free_bytes": int(usage.free),
+            "free_gb": round(usage.free / (1024 ** 3), 2),
+            "used_percent": round((usage.used / usage.total) * 100, 1) if usage.total else 0.0,
+        }
+    except Exception:
+        storage = None
+
+    configured_providers = sorted(list(list_saved().keys()))
     return {
         "ok": ready_ok,
         "ready": ready_ok,
@@ -96,6 +113,13 @@ async def ready():
         "checks": checks,
         "flow": flow_payload,
         "speaker_identity": speaker,
+        "runtime": {
+            "desktop_mode": os.getenv("TH_MEDIA_DESKTOP_MODE") == "1",
+            "active_pipelines": len(list_active_runs()),
+            "configured_providers": configured_providers,
+            "configured_provider_count": len(configured_providers),
+        },
+        "storage": storage,
     }
 
 
