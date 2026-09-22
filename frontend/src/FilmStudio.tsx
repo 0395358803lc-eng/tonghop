@@ -241,6 +241,9 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   )
   const consistencyReady = active?.consistency_report?.final_gate === true
   const consistencyStatus = active?.consistency_report?.status || 'CHƯA KIỂM TRA'
+  const consistencyRepairableCount = active?.consistency_report?.repairable_items?.length || 0
+  const canAutoRepairConsistency = !consistencyReady
+    && (consistencyStatus === 'REPAIRABLE' || consistencyRepairableCount > 0)
   const consistencyIssues = [
     ...(active?.consistency_report?.effective_errors || []),
     ...(active?.consistency_report?.review_items || []),
@@ -1004,8 +1007,12 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
                   {consistencyBusy ? <Loader2 className="spin" size={12} /> : <CheckCircle2 size={12} />} Kiểm tra bằng Rule + AI
                 </button>
                 <button
-                  disabled={consistencyBusy || consistencyStatus !== 'REPAIRABLE'}
-                  title={consistencyStatus === 'REPAIRABLE' ? 'Sửa các lỗi nhất quán có thể tự động xử lý' : consistencyReady ? 'Đã đạt. Không có lỗi để tự sửa.' : 'Chỉ bật khi kết quả là Có thể tự động sửa.'}
+                  disabled={consistencyBusy || !canAutoRepairConsistency}
+                  title={canAutoRepairConsistency
+                    ? 'Sửa ' + (consistencyRepairableCount || 'các') + ' lỗi nhất quán có thể tự động xử lý'
+                    : consistencyReady
+                      ? 'Đã đạt. Không có lỗi để tự sửa.'
+                      : 'Chưa có lỗi nào được Evidence Verifier xác nhận là có thể tự động sửa.'}
                   onClick={repairConsistency}
                 >
                   <WandSparkles size={12} /> Tự động sửa lỗi nhất quán
@@ -1071,7 +1078,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
           <div className="film-bottom-actions">
             <button onClick={async () => setActive(await api.analyzeFilmProject(active.id))}><Sparkles size={14} /> PHÂN TÍCH KỊCH BẢN</button>
             <button disabled={consistencyBusy} onClick={checkContinuity}>{consistencyBusy ? <Loader2 className="spin" size={14} /> : <AlertTriangle size={14} />} {consistencyBusy ? 'ĐANG KIỂM TRA RULE + AI' : 'KIỂM TRA TÍNH NHẤT QUÁN'}</button>
-            <button disabled={consistencyBusy || consistencyStatus !== 'REPAIRABLE'} onClick={repairConsistency}><WandSparkles size={14} /> TỰ ĐỘNG SỬA LỖI NHẤT QUÁN</button>
+            <button disabled={consistencyBusy || !canAutoRepairConsistency} onClick={repairConsistency}><WandSparkles size={14} /> TỰ ĐỘNG SỬA LỖI NHẤT QUÁN</button>
             <button disabled={renderBusy || !renderGateReady || (!selectedForRender.length && !activeSceneId)} onClick={() => queueRender(selectedForRender.length ? selectedForRender : (activeSceneId ? [activeSceneId] : []))}><Play size={14} /> TẠO CÁC CẢNH ĐÃ CHỌN</button>
             <button disabled={renderBusy || !renderGateReady} onClick={() => queueRender(active.scenes.map(scene => scene.id))}><Clapperboard size={14} /> TẠO TOÀN BỘ PHÂN CẢNH</button>
             <button disabled={renderBusy || productionBusy || consistencyBusy} className="primary" onClick={autoPipeline}><WandSparkles size={14} /> TẠO PHIM TỰ ĐỘNG</button>

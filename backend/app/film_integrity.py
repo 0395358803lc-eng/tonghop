@@ -315,11 +315,30 @@ def _owner_or_container(fragment: str, prop_id: str) -> tuple[str | None, str | 
     return None, None
 
 
+def _entity_is_negated(fragment: str, entity: str) -> bool:
+    """Return True when an entity token is mentioned only to state it is absent/off-scene."""
+    escaped = re.escape(entity)
+    patterns = (
+        rf"\bno\s+(?:the\s+)?{escaped}\b",
+        rf"\bwithout\s+(?:the\s+)?{escaped}\b",
+        rf"\b{escaped}\b\s+(?:is\s+)?(?:absent|not\s+present)\b",
+        rf"\bkhông\s+(?:có|còn|mang|giữ)\s+{escaped}\b",
+        rf"\bkhông\s+{escaped}\b",
+    )
+    return any(re.search(pattern, fragment, re.I) for pattern in patterns)
+
+
 def structure_state(text: str, declared_characters: list[str] | None = None, location_id: str | None = None, props_present: list[str] | None = None) -> dict:
     raw = str(text or "").strip()
-    entities = sorted(set(re.findall(r"(?:CHAR|PROP|LOC)_\d+", raw, re.I)))
-    entities = [x.upper() for x in entities]
     fragments = [x.strip() for x in re.split(r"[;\n]+", raw) if x.strip()]
+    candidates = sorted(set(re.findall(r"(?:CHAR|PROP|LOC)_\d+", raw, re.I)))
+    entities = []
+    for candidate in candidates:
+        entity = candidate.upper()
+        related = [frag for frag in fragments if entity.lower() in frag.lower()]
+        if related and all(_entity_is_negated(frag, entity) for frag in related):
+            continue
+        entities.append(entity)
     result = {
         "raw": raw,
         "entities": entities,
@@ -518,6 +537,34 @@ def _derive_action_state_dimensions(scene: dict, current_dimensions: dict) -> di
         str(scene.get("end_state") or ""),
     ]).lower()
     out = {}
+
+    # Simple mechanical devices (for example a watch case) can transition
+    # open/closed from source action even when END_STATE omits the PROP token.
+    if "mechanical_state" in current_dimensions:
+        if any(token in text for token in (
+            "case back closed", "case closed", "close the case", "closes the case",
+            "đóng nắp", "nắp đã đóng", "đóng nắp đáy",
+        )):
+            out["mechanical_state"] = "closed"
+        elif any(token in text for token in (
+            "case back open", "case opened", "open the case", "opens the case",
+            "mở nắp", "nắp mở", "mở nắp đáy",
+        )):
+            out["mechanical_state"] = "open"
+
+    # A revealed mechanical device that explicitly starts/stays ticking has
+    # observable motion even if rotation_state was not present in the initial schema.
+    watch_like = (
+        "visibility_state" in current_dimensions
+        and ("mechanical_state" in current_dimensions or "container_state" in current_dimensions)
+    )
+    if watch_like and any(token in text for token in (
+        "watch ticking", "still ticking", "watch still ticking",
+        "đồng hồ vẫn tick", "đồng hồ trên khay vẫn tick", "tiếng tick",
+        "kim giây giật một nhịp rồi chạy", "kim bắt đầu chạy",
+    )):
+        out["rotation_state"] = "spinning"
+
     if "disc_state" in current_dimensions:
         if any(token in text for token in (
             "on platter", "onto platter", "disc on platter", "record on platter",

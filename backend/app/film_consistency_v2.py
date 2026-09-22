@@ -85,6 +85,28 @@ def _json_from_text(text: str) -> dict:
     raise ValueError("AI semantic reviewer không trả về JSON hợp lệ")
 
 
+def _canonical_scene_id(value: object, project: dict) -> str:
+    raw = str(value or "").strip().upper()
+    if not raw or raw == "PROJECT":
+        return raw or "PROJECT"
+
+    actual_ids = [str(scene.get("id") or "").strip().upper() for scene in (project.get("scenes") or [])]
+    if raw in actual_ids:
+        return raw
+
+    match = re.fullmatch(r"SCENE_(\d+)", raw)
+    if not match:
+        return raw
+
+    number = int(match.group(1))
+    numeric_matches = []
+    for scene_id in actual_ids:
+        scene_match = re.fullmatch(r"SCENE_(\d+)", scene_id)
+        if scene_match and int(scene_match.group(1)) == number:
+            numeric_matches.append(scene_id)
+    return numeric_matches[0] if len(numeric_matches) == 1 else raw
+
+
 def _scene_payload(scene: dict) -> dict:
     return {
         "id": scene.get("id"),
@@ -157,8 +179,12 @@ Nhiệm vụ:
    Cụm "not fully revealed", "edge visible", "partially visible" là visibility_state=partial.
 8. Prop Ledger chỉ cần row cho scene có prop hiện diện hoặc prop transfer. Scene có PROPS_PRESENT=[]
    không phải lỗi nếu không có ledger row; trạng thái prop ngoài scene được carry-forward ngầm.
-9. Không đề xuất sửa action/dialogue/voiceover/source nếu có thể sửa representation/derived data.
-10. Chỉ dùng evidence có trong input. Không invent event/entity.
+9. Cụm phủ định như "no PROP_001", "without PROP_001", "không có PROP_001" hoặc mô tả "PROP_001 left inside"
+   trong một scene khác location KHÔNG có nghĩa prop đang hiện diện trong scene. Ưu tiên PROPS_PRESENT và ngữ nghĩa phủ định.
+10. Scene ở ngưỡng/junction có thể cố ý dùng location_id của một phía dù nhân vật/bối cảnh của cả hai phía cùng xuất hiện.
+    Nếu START/END/source ghi rõ threshold/junction/LOC_A↔LOC_B thì không được tự đổi location_id chỉ vì suy luận không gian.
+11. Không đề xuất sửa action/dialogue/voiceover/source nếu có thể sửa representation/derived data.
+12. Chỉ dùng evidence có trong input. Không invent event/entity.
 
 Chỉ trả JSON đúng schema:
 {
@@ -401,6 +427,11 @@ async def _semantic_review(project: dict, deterministic_report: dict, verificati
             except Exception:
                 confidence = 0.0
             issue = dict(issue)
+            issue["scene_id"] = _canonical_scene_id(issue.get("scene_id"), project)
+            issue["evidence_scene_ids"] = [
+                _canonical_scene_id(scene_id, project)
+                for scene_id in (issue.get("evidence_scene_ids") or [])
+            ]
             issue["confidence"] = max(0.0, min(confidence, 1.0))
             patch = str(issue.get("suggested_patch_type") or "NONE").upper()
             issue["suggested_patch_type"] = patch if patch in SAFE_PATCH_TYPES else "NONE"
@@ -467,6 +498,25 @@ def _verify_semantic_issues(semantic: dict, deterministic_report: dict, project:
         if isinstance(scene, dict) and scene.get("id")
     }
 
+    def _explicit_owner_through_scene(prop_id: str, scene_id: str) -> str | None:
+        owner = None
+        for prop in (project.get("props") or []):
+            if str(prop.get("id") or "").upper() == prop_id.upper():
+                owner = prop.get("owner_initial") or prop.get("initial_owner")
+                break
+
+        for scene in (project.get("scenes") or []):
+            sid = str(scene.get("id") or "")
+            for transfer in (scene.get("prop_transfers") or []):
+                if str(transfer.get("prop_id") or "").upper() != prop_id.upper():
+                    continue
+                target = transfer.get("target_owner")
+                if target:
+                    owner = target
+            if sid == scene_id:
+                break
+        return str(owner) if owner is not None else None
+
     def _scene_has_audible_playback(scene: dict) -> bool:
         text = " ".join([
             str(scene.get("source_text") or ""),
@@ -514,6 +564,84 @@ def _verify_semantic_issues(semantic: dict, deterministic_report: dict, project:
         entity_id = issue.get("entity_id")
         dimension = issue.get("dimension")
         scene_id = issue.get("scene_id") or "PROJECT"
+
+        if (
+            str(entity_id or "").startswith("PROP_")
+            and str(issue.get("issue_type") or "").upper() == "LOCATION"
+            and not dimension
+            and scene_id != "PROJECT"
+        ):
+            scene = scene_map.get(str(scene_id))
+            if scene:
+                prop_id = str(entity_id).upper()
+                props_present = {str(x).upper() for x in (scene.get("props_present") or []) if x}
+                raw_context = " ".join([
+                    str(scene.get("start_state") or ""),
+                    str(scene.get("end_state") or ""),
+                    str(scene.get("action") or ""),
+                    str(scene.get("source_text") or ""),
+                ])
+                escaped = re.escape(prop_id)
+                explicit_absence = any(re.search(pattern, raw_context, re.I) for pattern in (
+                    rf"\bno\s+(?:the\s+)?{escaped}\b",
+                    rf"\bwithout\s+(?:the\s+)?{escaped}\b",
+                    rf"\bkhông\s+(?:có|còn|mang|giữ)\s+{escaped}\b",
+                ))
+                if prop_id not in props_present and explicit_absence:
+                    issue["evidence_verified"] = False
+                    issue["verification_note"] = (
+                        f"{prop_id} được source nhắc trong ngữ cảnh phủ định/off-screen và không có trong props_present; "
+                        "không được coi token textual là bằng chứng prop hiện diện sai location."
+                    )
+                    rejected.append(issue)
+                    continue
+
+        if (
+            str(entity_id or "").startswith("LOC_")
+            and str(issue.get("issue_type") or "").upper() == "LOCATION"
+            and not dimension
+            and scene_id != "PROJECT"
+        ):
+            scene = scene_map.get(str(scene_id))
+            if scene:
+                actual_location = str(issue.get("actual_value") or "")
+                expected_location = str(issue.get("expected_value") or "")
+                source_location = str(
+                    (scene.get("source_snapshot") or {}).get("location_id")
+                    or scene.get("location_id")
+                    or ""
+                )
+                boundary_context = " ".join([
+                    str(scene.get("action") or ""),
+                    str(scene.get("start_state") or ""),
+                    str(scene.get("end_state") or ""),
+                    str(scene.get("source_text") or ""),
+                ])
+                boundary_marked = any(token in boundary_context.lower() for token in (
+                    "threshold", "junction", "ngưỡng", "cửa vào", "doorway",
+                )) or "↔" in boundary_context
+                both_locations_named = bool(
+                    actual_location
+                    and expected_location
+                    and actual_location in boundary_context
+                    and expected_location in boundary_context
+                )
+                if (
+                    actual_location
+                    and source_location == actual_location
+                    and expected_location
+                    and expected_location != actual_location
+                    and boundary_marked
+                    and both_locations_named
+                ):
+                    issue["evidence_verified"] = False
+                    issue["verification_note"] = (
+                        f"{scene_id} là boundary/junction scene đã source-lock location_id={actual_location}; "
+                        f"source đồng thời nhắc {actual_location}↔{expected_location}. "
+                        "Không được tự đổi location_id chỉ từ suy luận không gian."
+                    )
+                    rejected.append(issue)
+                    continue
 
         if str(issue.get("deterministic_code") or "") == "MISSING_LEDGER_ENTRY":
             claim_text = " ".join([
@@ -568,6 +696,59 @@ def _verify_semantic_issues(semantic: dict, deterministic_report: dict, project:
                     continue
 
             expected = issue.get("expected_value")
+
+            if expected is not None and authoritative is not None and expected != authoritative:
+                scene = scene_map.get(str(scene_id))
+                if scene:
+                    source_context = " ".join([
+                        str(scene.get("action") or ""),
+                        str(scene.get("start_state") or ""),
+                        str(scene.get("end_state") or ""),
+                        str(scene.get("source_text") or ""),
+                    ]).lower()
+                    entity_token = str(entity_id or "").lower()
+                    explicit_patterns = {
+                        ("mechanical_state", "open"): (
+                            rf"\bopened\s+{re.escape(entity_token)}\b",
+                            rf"\bopen\s+{re.escape(entity_token)}\b",
+                            rf"\b{re.escape(entity_token)}\b[^.;]{{0,48}}\bopen\b",
+                            r"\bopen box remains\b",
+                            r"\bopened box\b",
+                        ),
+                        ("mechanical_state", "closed"): (
+                            rf"\bclosed\s+{re.escape(entity_token)}\b",
+                            rf"\b{re.escape(entity_token)}\b[^.;]{{0,48}}\bclosed\b",
+                            r"\bcase back closed\b",
+                            r"\bđóng nắp\b",
+                        ),
+                    }
+                    patterns = explicit_patterns.get((str(dimension), str(authoritative).lower()), ())
+                    if patterns and any(re.search(pattern, source_context, re.I) for pattern in patterns):
+                        issue["evidence_verified"] = False
+                        issue["verification_note"] = (
+                            f"Source của {scene_id} xác nhận {entity_id}.{dimension}={authoritative!r}; "
+                            f"ledger cũng là {authoritative!r}. AI không được suy diễn thành {expected!r} "
+                            "nếu source không có transition tương ứng."
+                        )
+                        rejected.append(issue)
+                        continue
+
+            if str(dimension) == "owner":
+                explicit_owner = _explicit_owner_through_scene(str(entity_id), str(scene_id))
+                if (
+                    explicit_owner is not None
+                    and authoritative == explicit_owner
+                    and expected is not None
+                    and expected != authoritative
+                ):
+                    issue["evidence_verified"] = False
+                    issue["verification_note"] = (
+                        f"PROP_TRANSFERS xác nhận owner={explicit_owner!r} tới {scene_id}; "
+                        f"ledger cũng là {authoritative!r}. AI không được suy đoán đổi owner thành {expected!r} "
+                        "nếu source không có transfer mới."
+                    )
+                    rejected.append(issue)
+                    continue
 
             if str(dimension) == "playback_state" and expected == "playing":
                 scene = scene_map.get(str(scene_id))
@@ -750,7 +931,7 @@ def _scene_results(project: dict, arbitration: dict) -> list[dict]:
         + arbitration.get("semantic_errors", [])
         + arbitration.get("review_items", [])
     ):
-        by_scene.setdefault(str(item.get("scene") or "PROJECT"), []).append(item)
+        by_scene.setdefault(str(item.get("scene") or item.get("scene_id") or "PROJECT"), []).append(item)
     out = []
     for scene in project.get("scenes") or []:
         sid = str(scene.get("id") or "")
