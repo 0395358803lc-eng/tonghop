@@ -421,3 +421,331 @@ def preview_narrator_upgrade(
         "ready": bool(ready),
         "scenes": public_rows,
     }
+
+
+def build_overlay_qc(base_media: dict, evidence: dict, speaker_item: dict | None = None) -> dict:
+    """Reuse visual QC only when the video stream is bit-identical, then replace audio evidence."""
+    if evidence.get("video_stream_unchanged") is not True:
+        raise ValueError("NARRATOR_OVERLAY_VISUAL_INVARIANT_FAILED")
+    base_qc = base_media.get("qc") if isinstance(base_media.get("qc"), dict) else {}
+    qc = json.loads(json.dumps(base_qc, ensure_ascii=False))
+    score = base_media.get("qc_score")
+    if score is None:
+        score = qc.get("consistency_score")
+    qc["version"] = qc.get("version") or "video-qc-v2"
+    qc["qc_status"] = "passed"
+    qc["passed"] = True
+    qc["consistency_score"] = score
+    qc.setdefault("hard_gate", {"passed": True, "failed": []})
+    qc["hard_gate"]["passed"] = True
+    qc["hard_gate"]["failed"] = []
+
+    ev = qc.setdefault("evidence", {})
+    ev["audio"] = dict(evidence.get("audio_metrics") or {})
+    ev["narrator_tts"] = {
+        "version": evidence.get("version"),
+        "provider": evidence.get("provider"),
+        "model": evidence.get("model"),
+        "voice_id": evidence.get("voice_id"),
+        "base_media_id": evidence.get("base_media_id"),
+        "video_stream_sha256": evidence.get("video_stream_sha256"),
+        "video_stream_unchanged": evidence.get("video_stream_unchanged"),
+        "speech_windows": evidence.get("speech_windows"),
+        "tts_duration": evidence.get("tts_duration"),
+        "target_speech_duration": evidence.get("target_speech_duration"),
+        "atempo_factor": evidence.get("atempo_factor"),
+    }
+
+    raw = qc.setdefault("raw", {})
+    speech = json.loads(json.dumps(evidence.get("new_stt") or {}, ensure_ascii=False))
+    if speaker_item:
+        speech["speaker_verification"] = dict(speaker_item)
+    raw["speech_check"] = speech
+    raw["audio_check"] = dict(evidence.get("audio_metrics") or {})
+
+    issues = []
+    for issue in qc.get("issues") or []:
+        if str((issue or {}).get("type") or "").startswith("voice_identity"):
+            continue
+        issues.append(issue)
+    if speaker_item and speaker_item.get("status") not in {"passed", "enrolled_reference", "not_required"}:
+        issues.append({
+            "type": "voice_identity",
+            "severity": "high",
+            "evidence": f"External TTS speaker verification status={speaker_item.get('status')}",
+            "expected": "Fixed narrator voice must be fully calibrated and verified.",
+        })
+    qc["issues"] = issues
+    qc["narrator_tts"] = {
+        "provider": evidence.get("provider"),
+        "model": evidence.get("model"),
+        "voice_id": evidence.get("voice_id"),
+        "fully_verified": bool(
+            speaker_item
+            and speaker_item.get("status") in {"passed", "enrolled_reference", "not_required"}
+        ),
+    }
+    return qc
+
+
+async def apply_narrator_upgrade(
+    project_id: str,
+    *,
+    voice_id: str = DEFAULT_NARRATOR_VOICE,
+    speed: float = 1.0,
+) -> dict:
+    """Apply a prevalidated audio-only narrator upgrade to selected media and rebuild acceptance."""
+    from .film_acceptance_snapshot import create_acceptance_snapshot
+    from .film_boundary_service import recheck_junctions_for_scene_async
+    from .film_final_assembly import assemble_project
+    from .film_master_qc import run_master_qc
+    from .film_media_service import _probe_video, make_thumbnail, select_production_media
+    from .film_media_store import (
+        get_media,
+        register_completed_media,
+        update_media_qc,
+    )
+    from .film_prompt_policy_migration import build_policy_revalidation
+    from .film_scene_state_store import (
+        execution_lease_active,
+        get_active_run,
+        get_ledger,
+        get_scene_state,
+        save_ledger,
+        upsert_scene_state,
+    )
+    from .film_speaker_acceptance import run_project_speaker_acceptance
+    from .film_voice_profile_store import default_narrator_profile, upsert_voice_profile
+
+    if get_active_run(project_id):
+        raise ValueError("NARRATOR_TTS_PIPELINE_ACTIVE")
+    if execution_lease_active(project_id):
+        raise ValueError("NARRATOR_TTS_EXECUTION_LEASE_ACTIVE")
+
+    project = get_film_project(project_id)
+    if not project:
+        raise ValueError("Không tìm thấy dự án phim.")
+
+    preview = preview_narrator_upgrade(project_id, voice_id=voice_id, speed=speed)
+    if preview.get("ready") is not True:
+        raise ValueError("NARRATOR_TTS_PREVIEW_NOT_READY")
+
+    profile = default_narrator_profile()
+    profile.update({
+        "provider": TTS_PROVIDER,
+        "provider_voice_id": voice_id,
+        "tts_model": TTS_MODEL,
+        "voice_identity": (
+            f"fixed xKiro voice id {voice_id}; deterministic narrator voice; "
+            "same provider voice across every narration scene"
+        ),
+    })
+    upsert_voice_profile(
+        project_id,
+        "NARRATOR",
+        profile,
+        provider=TTS_PROVIDER,
+        provider_voice_id=voice_id,
+    )
+
+    registered: dict[str, dict] = {}
+    evidence_by_scene = {row["scene_id"]: row for row in (preview.get("scenes") or [])}
+    for scene_id, evidence in evidence_by_scene.items():
+        base_media = get_media(str(evidence.get("base_media_id") or ""))
+        if not base_media or base_media.get("is_selected") is not True:
+            raise ValueError(f"NARRATOR_TTS_BASE_MEDIA_CHANGED:{scene_id}")
+        output_path = Path(str(evidence.get("output_path") or ""))
+        if not output_path.is_file():
+            raise ValueError(f"NARRATOR_TTS_OUTPUT_MISSING:{scene_id}")
+        probe = _probe_video(output_path)
+        base_thumb = Path(str(base_media.get("thumbnail_path") or ""))
+        thumb = make_thumbnail(
+            output_path,
+            "video",
+            base_thumb if base_thumb.is_file() else None,
+            key=f"narrator_tts_{scene_id}",
+        )
+        qc = build_overlay_qc(base_media, evidence)
+        digest = hashlib.sha256(output_path.read_bytes()).hexdigest()
+        record = register_completed_media(
+            project_id=project_id,
+            media_type="video",
+            role="scene_video",
+            file_path=output_path,
+            scene_id=scene_id,
+            provider=TTS_PROVIDER,
+            model=TTS_MODEL,
+            provider_job_id=f"narrator-tts:{project_id}:{scene_id}:{digest[:24]}",
+            thumbnail_path=thumb,
+            mime_type=probe.get("mime_type") or "video/mp4",
+            file_size=output_path.stat().st_size,
+            width=probe.get("width"),
+            height=probe.get("height"),
+            duration_seconds=probe.get("duration_seconds"),
+            qc_status="passed",
+            qc_score=base_media.get("qc_score"),
+            qc=qc,
+            metadata={
+                "source": "narrator_tts_overlay",
+                "tts_version": NARRATOR_TTS_VERSION,
+                "base_media_id": base_media.get("id"),
+                "base_media_version": base_media.get("version"),
+                "video_stream_sha256": evidence.get("video_stream_sha256"),
+                "video_stream_unchanged": True,
+                "provider_voice_id": voice_id,
+                "tts_model": TTS_MODEL,
+                "download_name": output_path.name,
+            },
+            select_if_passed=False,
+        )
+        registered[scene_id] = record
+
+    # Switch selection only after all overlay records have been created.
+    for scene_id, media in registered.items():
+        registered[scene_id] = select_production_media(media["id"])
+
+    acceptance = run_project_speaker_acceptance(project_id, recalibrate=True)
+    narrator_cal = (
+        ((acceptance.get("calibration") or {}).get("speaker_calibrations") or {}).get("NARRATOR")
+        or {}
+    )
+    if (
+        acceptance.get("fully_verified") is not True
+        or narrator_cal.get("status") != "calibrated"
+    ):
+        raise RuntimeError(
+            "NARRATOR_TTS_SPEAKER_ACCEPTANCE_FAILED:"
+            + json.dumps({
+                "fully_verified": acceptance.get("fully_verified"),
+                "narrator_calibration": narrator_cal,
+            }, ensure_ascii=False)
+        )
+
+    item_by_scene = {
+        str(item.get("scene_id")): item
+        for item in (acceptance.get("items") or [])
+        if isinstance(item, dict)
+    }
+    project = get_film_project(project_id) or project
+    policy = build_policy_revalidation(project, acceptance)
+    upgraded = []
+
+    for scene_id, evidence in evidence_by_scene.items():
+        media = registered[scene_id]
+        base_media = get_media(str(evidence.get("base_media_id") or "")) or {}
+        speaker_item = item_by_scene.get(scene_id) or {}
+        if speaker_item.get("status") not in {"passed", "enrolled_reference", "not_required"}:
+            raise RuntimeError(f"NARRATOR_TTS_SCENE_NOT_VERIFIED:{scene_id}:{speaker_item.get('status')}")
+        qc = build_overlay_qc(base_media, evidence, speaker_item)
+        media = update_media_qc(
+            media["id"],
+            qc_status="passed",
+            qc=qc,
+            qc_score=base_media.get("qc_score"),
+        )
+        media = select_production_media(media["id"])
+
+        state = get_scene_state(project_id, scene_id) or {}
+        ledger = dict(get_ledger(project_id, scene_id) or {})
+        ledger["selected_media_id"] = media["id"]
+        ledger["dialogue_state"] = "delivered"
+        ledger["audio_state"] = dict(evidence.get("audio_metrics") or {})
+        snap = dict(ledger.get("snapshot") or {})
+        snap.update({
+            "provider": TTS_PROVIDER,
+            "model": TTS_MODEL,
+            "qc_status": "passed",
+            "consistency_score": base_media.get("qc_score"),
+            "media_id": media["id"],
+            "media_version": media.get("version"),
+            "narrator_voice_id": voice_id,
+            "tts_version": NARRATOR_TTS_VERSION,
+        })
+        ledger["snapshot"] = snap
+        ledger = save_ledger(project_id, scene_id, ledger)
+
+        scene = next(
+            row for row in (project.get("scenes") or [])
+            if row.get("id") == scene_id
+        )
+        upsert_scene_state(
+            project_id,
+            scene_id,
+            int(scene.get("scene_index") or state.get("scene_index") or 0),
+            status="APPROVED",
+            selected_media_id=media["id"],
+            best_media_id=media["id"],
+            best_score=base_media.get("qc_score"),
+            qc=qc,
+            error=None,
+            blocked_reason=None,
+            snapshot={
+                "ledger": ledger,
+                "media_id": media["id"],
+                "narrator_tts": {
+                    "provider": TTS_PROVIDER,
+                    "model": TTS_MODEL,
+                    "voice_id": voice_id,
+                    "speaker_status": speaker_item.get("status"),
+                    "speaker_similarity": speaker_item.get("speaker_similarity"),
+                },
+            },
+            force=True,
+        )
+        snapshot = create_acceptance_snapshot(
+            project_id,
+            scene_id,
+            policy_revalidation=policy.get(scene_id) or {},
+        )
+        upgraded.append({
+            "scene_id": scene_id,
+            "media_id": media["id"],
+            "media_version": media.get("version"),
+            "speaker_status": speaker_item.get("status"),
+            "speaker_similarity": speaker_item.get("speaker_similarity"),
+            "snapshot_id": snapshot.get("id"),
+        })
+
+    junction_rows: dict[str, dict] = {}
+    for scene_id in evidence_by_scene:
+        for row in await recheck_junctions_for_scene_async(project_id, scene_id):
+            junction_rows[str(row.get("id") or f"{row.get('previous_scene_id')}->{row.get('next_scene_id')}")] = row
+    junction_fail = [row for row in junction_rows.values() if row.get("status") != "PASS"]
+    if junction_fail:
+        raise RuntimeError(
+            "NARRATOR_TTS_JUNCTION_FAILED:"
+            + json.dumps([
+                {
+                    "previous_scene_id": row.get("previous_scene_id"),
+                    "next_scene_id": row.get("next_scene_id"),
+                    "status": row.get("status"),
+                    "error": row.get("error"),
+                }
+                for row in junction_fail
+            ], ensure_ascii=False)
+        )
+
+    assembled = assemble_project(project_id)
+    current = assembled.get("current") or {}
+    if current.get("status") in {"QC_PENDING", "QC_FAILED"}:
+        assembled = run_master_qc(project_id, current.get("id"))
+        current = assembled.get("current") or {}
+    if current.get("status") != "APPROVED":
+        raise RuntimeError(f"NARRATOR_TTS_FINAL_NOT_APPROVED:{current.get('status')}")
+
+    return {
+        "version": NARRATOR_TTS_VERSION,
+        "project_id": project_id,
+        "voice_id": voice_id,
+        "provider": TTS_PROVIDER,
+        "model": TTS_MODEL,
+        "preview": {
+            "ready": preview.get("ready"),
+            "min_same_voice_similarity": preview.get("min_same_voice_similarity"),
+            "required_similarity": preview.get("required_similarity"),
+        },
+        "speaker_acceptance": acceptance,
+        "upgraded_scenes": upgraded,
+        "junctions": list(junction_rows.values()),
+        "final": assembled,
+    }
