@@ -240,6 +240,7 @@ fn boot_runtime() -> io::Result<RuntimeBoot> {
         ),
         ("TH_MEDIA_BACKEND_HOST", "127.0.0.1".to_string()),
         ("TH_MEDIA_BACKEND_PORT", backend_port.to_string()),
+        ("TH_MEDIA_DESKTOP_MODE", "1".to_string()),
         ("TH_MEDIA_AUTH_TOKEN", auth_token.clone()),
         ("TH_MEDIA_FLOW_BRIDGE_URL", flow_url),
         ("FLOW_BRIDGE_API_KEY", flow_key.clone()),
