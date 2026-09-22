@@ -25,6 +25,11 @@ from .film_dialogue_service import project_audio_requirements
 from .film_voice_profile_store import ensure_voice_profiles, list_voice_profiles
 from .film_speaker_identity import speaker_identity_status
 from .film_speaker_acceptance import run_project_speaker_acceptance
+from .desktop_shutdown import (
+    prepare_force_shutdown,
+    request_safe_shutdown,
+    shutdown_status as desktop_shutdown_status,
+)
 from .film_boundary_service import check_project_junctions, check_project_junctions_async, list_project_junctions, retry_junction
 from .film_final_assembly import assemble_project, final_status
 from .film_master_qc import run_master_qc
@@ -775,6 +780,21 @@ def film_snapshot_backfill(project_id: str):
     if not get_film_project(project_id):
         raise HTTPException(404, "Không tìm thấy dự án phim")
     return backfill_acceptance_snapshots(project_id)
+
+
+@router.get("/desktop/shutdown/status")
+def desktop_shutdown_state():
+    return desktop_shutdown_status()
+
+
+@router.post("/desktop/shutdown/request-safe")
+def desktop_shutdown_request_safe():
+    return request_safe_shutdown()
+
+
+@router.post("/desktop/shutdown/prepare-force")
+def desktop_shutdown_prepare_force():
+    return prepare_force_shutdown()
 
 
 @router.post("/film/projects/{project_id}/pipeline/start")

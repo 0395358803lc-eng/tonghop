@@ -7,7 +7,10 @@ use std::{
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -16,12 +19,18 @@ use std::{
 use std::os::windows::process::CommandExt;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, IDCANCEL, IDNO, IDOK, IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OKCANCEL,
+    MB_SETFOREGROUND, MB_YESNOCANCEL,
+};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 struct RuntimeBoot {
     backend_url: String,
+    backend_port: u16,
     auth_token: String,
     flow_port: u16,
     flow_key: String,
@@ -163,6 +172,83 @@ fn stop_flow_chrome(control: &Arc<Mutex<Option<(u16, String)>>>) {
         let _ = stream.read_to_string(&mut response);
     }
 }
+
+fn backend_json(
+    control: &Arc<Mutex<Option<(u16, String)>>>,
+    method: &str,
+    path: &str,
+) -> Option<serde_json::Value> {
+    let (port, token) = control.lock().ok().and_then(|guard| guard.clone())?;
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-TH-Media-Token: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    let mut parts = response.splitn(2, "\r\n\r\n");
+    let headers = parts.next()?;
+    let body = parts.next().unwrap_or("");
+    let status_line = headers.lines().next().unwrap_or("");
+    if !status_line.contains(" 200 ") {
+        return None;
+    }
+    serde_json::from_str(body).ok()
+}
+
+#[cfg(windows)]
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn shutdown_choice(active_count: u64, already_waiting: bool) -> i32 {
+    let title = wide("TH Media");
+    let message = if already_waiting {
+        format!(
+            "TH Media đang đợi cảnh hiện tại hoàn tất trước khi thoát.\n\nĐang có {active_count} pipeline hoạt động.\n\nYes: tiếp tục chờ\nNo: checkpoint và thoát ngay\nCancel: quay lại ứng dụng"
+        )
+    } else {
+        format!(
+            "Đang có {active_count} pipeline tạo phim hoạt động.\n\nYes: dừng sau cảnh hiện tại rồi tự thoát\nNo: checkpoint và thoát ngay\nCancel: không đóng ứng dụng"
+        )
+    };
+    let message = wide(&message);
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_YESNOCANCEL | MB_ICONWARNING | MB_SETFOREGROUND,
+        )
+    }
+}
+
+#[cfg(windows)]
+fn backend_unavailable_choice() -> i32 {
+    let title = wide("TH Media");
+    let message = wide(
+        "Backend TH Media không phản hồi nên không thể xác nhận trạng thái pipeline.\n\nOK: thoát ngay\nCancel: giữ ứng dụng mở",
+    );
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OKCANCEL | MB_ICONERROR | MB_SETFOREGROUND,
+        )
+    }
+}
+
+fn terminate_runtime(
+    flow_control: &Arc<Mutex<Option<(u16, String)>>>,
+    children: &Arc<Mutex<Vec<Child>>>,
+) -> ! {
+    stop_flow_chrome(flow_control);
+    stop_children(children);
+    std::process::exit(0);
+}
 fn boot_runtime() -> io::Result<RuntimeBoot> {
     let root = local_app_root()?;
     create_runtime_dirs(&root)?;
@@ -268,6 +354,7 @@ fn boot_runtime() -> io::Result<RuntimeBoot> {
     }
     Ok(RuntimeBoot {
         backend_url,
+        backend_port,
         auth_token,
         flow_port,
         flow_key,
@@ -278,8 +365,12 @@ fn boot_runtime() -> io::Result<RuntimeBoot> {
 fn main() {
     let children = Arc::new(Mutex::new(Vec::<Child>::new()));
     let flow_control = Arc::new(Mutex::new(None::<(u16, String)>));
+    let backend_control = Arc::new(Mutex::new(None::<(u16, String)>));
+    let safe_shutdown_waiting = Arc::new(AtomicBool::new(false));
     let setup_children = Arc::clone(&children);
     let setup_flow_control = Arc::clone(&flow_control);
+    let setup_backend_control = Arc::clone(&backend_control);
+    let setup_safe_shutdown_waiting = Arc::clone(&safe_shutdown_waiting);
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -320,18 +411,106 @@ fn main() {
             if let Ok(mut guard) = setup_flow_control.lock() {
                 *guard = Some((boot.flow_port, boot.flow_key.clone()));
             }
+            if let Ok(mut guard) = setup_backend_control.lock() {
+                *guard = Some((boot.backend_port, boot.auth_token.clone()));
+            }
             if let Ok(mut guard) = setup_children.lock() {
                 guard.extend(boot.children);
             }
 
             let close_children = Arc::clone(&setup_children);
             let close_flow_control = Arc::clone(&setup_flow_control);
+            let close_backend_control = Arc::clone(&setup_backend_control);
+            let close_safe_shutdown_waiting = Arc::clone(&setup_safe_shutdown_waiting);
+            let close_window = window.clone();
             window.on_window_event(move |event| {
-                if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                    stop_flow_chrome(&close_flow_control);
-                    stop_children(&close_children);
-                    std::process::exit(0);
+                let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                    return;
+                };
+                api.prevent_close();
+
+                let Some(status) = backend_json(
+                    &close_backend_control,
+                    "GET",
+                    "/api/desktop/shutdown/status",
+                ) else {
+                    if backend_unavailable_choice() == IDOK {
+                        terminate_runtime(&close_flow_control, &close_children);
+                    }
+                    return;
+                };
+
+                if status
+                    .get("safe_to_exit")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+                {
+                    terminate_runtime(&close_flow_control, &close_children);
                 }
+
+                let active_count = status
+                    .get("active_count")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(1);
+                let already_waiting = close_safe_shutdown_waiting.load(Ordering::SeqCst);
+                let choice = shutdown_choice(active_count, already_waiting);
+
+                if choice == IDCANCEL {
+                    return;
+                }
+
+                if choice == IDNO {
+                    if backend_json(
+                        &close_backend_control,
+                        "POST",
+                        "/api/desktop/shutdown/prepare-force",
+                    )
+                    .is_some()
+                    {
+                        terminate_runtime(&close_flow_control, &close_children);
+                    }
+                    return;
+                }
+
+                if choice != IDYES || already_waiting {
+                    return;
+                }
+
+                if backend_json(
+                    &close_backend_control,
+                    "POST",
+                    "/api/desktop/shutdown/request-safe",
+                )
+                .is_none()
+                {
+                    return;
+                }
+
+                close_safe_shutdown_waiting.store(true, Ordering::SeqCst);
+                let _ = close_window.set_title("TH Media — Đang dừng sau cảnh hiện tại...");
+
+                let wait_backend = Arc::clone(&close_backend_control);
+                let wait_flow = Arc::clone(&close_flow_control);
+                let wait_children = Arc::clone(&close_children);
+                let wait_flag = Arc::clone(&close_safe_shutdown_waiting);
+                thread::spawn(move || loop {
+                    thread::sleep(Duration::from_secs(1));
+                    match backend_json(&wait_backend, "GET", "/api/desktop/shutdown/status") {
+                        Some(value)
+                            if value
+                                .get("safe_to_exit")
+                                .and_then(|item| item.as_bool())
+                                .unwrap_or(false) =>
+                        {
+                            terminate_runtime(&wait_flow, &wait_children);
+                        }
+                        Some(_) => {}
+                        None => {
+                            wait_flag.store(false, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+                });
             });
             Ok(())
         })

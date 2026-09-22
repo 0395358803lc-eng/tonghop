@@ -349,6 +349,16 @@ def latest_run(project_id: str) -> dict | None:
     return _row(row)
 
 
+def list_active_runs() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM film_pipeline_runs
+               WHERE status IN ('running','paused','stopping')
+               ORDER BY created_at ASC"""
+        ).fetchall()
+    return [_row(row) for row in rows if row]
+
+
 def update_run(run_id: str, **values) -> dict | None:
     allowed = {
         "status",
