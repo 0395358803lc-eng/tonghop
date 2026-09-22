@@ -565,6 +565,13 @@ async def job_status(job_id: str):
     return job
 
 
+@app.post("/v1/runtime/stop-chrome", dependencies=[Depends(require_bridge_key)])
+async def stop_runtime_chrome():
+    await flow_browser.close()
+    flow_sessions.stop_flow_chrome()
+    return {"ok": True}
+
+
 @app.on_event("shutdown")
 async def shutdown():
     await flow_browser.close()

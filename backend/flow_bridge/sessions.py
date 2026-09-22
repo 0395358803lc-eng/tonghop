@@ -11,9 +11,9 @@ from urllib.parse import urlparse
 
 from .config import DATA_DIR, load_config
 
-ACTIVE_PROFILE = DATA_DIR / "flow_chrome_profile"
-SESSIONS_ROOT = DATA_DIR / "flow_sessions"
-REGISTRY_PATH = DATA_DIR / "flow_sessions.json"
+ACTIVE_PROFILE = Path(os.getenv("TH_MEDIA_FLOW_PROFILE_DIR") or (DATA_DIR / "flow_chrome_profile")).resolve()
+SESSIONS_ROOT = Path(os.getenv("TH_MEDIA_FLOW_SESSIONS_DIR") or (DATA_DIR / "flow_sessions")).resolve()
+REGISTRY_PATH = Path(os.getenv("TH_MEDIA_FLOW_REGISTRY_PATH") or (DATA_DIR / "flow_sessions.json")).resolve()
 SKIP_DIRS = {
     "Crashpad", "ShaderCache", "GrShaderCache", "GraphiteDawnCache",
     "Code Cache", "GPUCache", "DawnGraphiteCache",
