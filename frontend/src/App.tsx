@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Bot, CheckCircle2, ChevronDown, Clapperboard, Film, KeyRound, Loader2, LogIn, MessageSquare, Plus, Save, Send, Settings, Sparkles, Trash2, UserPlus, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from './api'
-import VideoAnalyzer from './VideoAnalyzer'
-import FilmStudio from './FilmStudio'
 import type { Chat, FlowMetrics, FlowSavedSession, FlowSessionList, FlowStatus, Message, Provider } from './types'
 import './App.css'
+
+const VideoAnalyzer = lazy(() => import('./VideoAnalyzer'))
+const FilmStudio = lazy(() => import('./FilmStudio'))
 
 type DraftKeys = Record<string, { key: string; base: string }>
 
@@ -483,9 +484,13 @@ function App() {
           <div className="composer-note">AI có thể mắc lỗi. Hãy kiểm tra thông tin quan trọng.</div>
         </div>
         </>) : appMode === 'video' ? (
-          <VideoAnalyzer providerId={providerId} model={model} provider={currentProvider} onOpenSettings={() => setSettingsOpen(true)} />
+          <Suspense fallback={<div className="feature-loading"><Loader2 className="spin" size={20} /><span>Đang tải Phân tích video...</span></div>}>
+            <VideoAnalyzer providerId={providerId} model={model} provider={currentProvider} onOpenSettings={() => setSettingsOpen(true)} />
+          </Suspense>
         ) : (
-          <FilmStudio providerId={providerId} model={model} provider={currentProvider} onOpenSettings={() => setSettingsOpen(true)} />
+          <Suspense fallback={<div className="feature-loading"><Loader2 className="spin" size={20} /><span>Đang tải Xưởng phim AI...</span></div>}>
+            <FilmStudio providerId={providerId} model={model} provider={currentProvider} onOpenSettings={() => setSettingsOpen(true)} />
+          </Suspense>
         )}
       </main>
 

@@ -50,6 +50,7 @@
 .provider-status { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid rgba(255,181,71,.12); border-radius: 999px; color: #a27e4f; background: rgba(190,123,36,.045); font-size: 10px; font-weight: 600; }
 .provider-status.ready { color: #73cda1; border-color: rgba(74,202,135,.12); background: rgba(35,170,102,.05); }
 .conversation { flex: 1; min-height: 0; overflow-y: auto; }
+.feature-loading { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--muted); font-size: 12px; }
 .welcome { width: min(720px, calc(100% - 48px)); margin: 0 auto; min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 70px 0 150px; text-align: center; }
 .hero-icon { width: 58px; height: 58px; display: grid; place-items: center; margin-bottom: 22px; border: 1px solid rgba(161,133,255,.2); border-radius: 18px; color: #c5b5ff; background: linear-gradient(145deg,rgba(125,92,255,.2),rgba(60,76,146,.1)); box-shadow: 0 20px 55px rgba(73,49,170,.17); }
 .welcome h1 { margin: 0; color: #f4f5fb; font-size: clamp(32px,4vw,48px); line-height: 1.04; letter-spacing: -.045em; font-weight: 650; }
