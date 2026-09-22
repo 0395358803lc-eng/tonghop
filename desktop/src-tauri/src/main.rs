@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
 use std::{
     env,
@@ -31,7 +31,7 @@ struct RuntimeBoot {
 fn local_app_root() -> io::Result<PathBuf> {
     let base = env::var_os("LOCALAPPDATA")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is unavailable"))?;
-    Ok(PathBuf::from(base).join("TH Media"))
+    Ok(PathBuf::from(base).join("TH Media").join("Desktop"))
 }
 fn create_runtime_dirs(root: &Path) -> io::Result<()> {
     fs::create_dir_all(root)?;
