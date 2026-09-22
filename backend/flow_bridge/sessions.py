@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -6,6 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .config import DATA_DIR, load_config
 
@@ -27,10 +29,13 @@ def _now() -> str:
 
 
 def _chrome_exe() -> Path:
+    configured = os.getenv("TH_MEDIA_CHROME_PATH")
     candidates = [
+        Path(configured).expanduser() if configured else None,
         Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
         Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
     ]
+    candidates = [path for path in candidates if path is not None]
     chrome = next((path for path in candidates if path.exists()), None)
     if chrome is None:
         raise RuntimeError("Không tìm thấy Google Chrome trên máy.")
@@ -157,10 +162,22 @@ def set_flow_chrome_visibility(visible: bool) -> int:
         return 0
 
 
-def port_open(port: int = 9223) -> bool:
+def cdp_port() -> int:
+    raw = str(load_config().get("cdp_url") or "")
+    try:
+        parsed = urlparse(raw)
+        if parsed.port:
+            return int(parsed.port)
+    except ValueError:
+        pass
+    return 9223
+
+
+def port_open(port: int | None = None) -> bool:
+    target_port = int(port or cdp_port())
     with socket.socket() as sock:
         sock.settimeout(0.3)
-        return sock.connect_ex(("127.0.0.1", port)) == 0
+        return sock.connect_ex(("127.0.0.1", target_port)) == 0
 
 
 def wait_port(port: int, seconds: float, want_open: bool) -> bool:
@@ -173,9 +190,10 @@ def wait_port(port: int, seconds: float, want_open: bool) -> bool:
 
 
 def stop_flow_chrome() -> None:
+    port = cdp_port()
     for pid in chrome_pids():
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True)
-    wait_port(9223, 12, want_open=False)
+    wait_port(port, 12, want_open=False)
     lock = ACTIVE_PROFILE / "SingletonLock"
     if lock.exists():
         try:
@@ -186,13 +204,14 @@ def stop_flow_chrome() -> None:
 
 def start_flow_chrome(url: str | None = None, *, visible: bool = False) -> None:
     ACTIVE_PROFILE.mkdir(parents=True, exist_ok=True)
-    if port_open(9223):
+    port = cdp_port()
+    if port_open(port):
         set_flow_chrome_visibility(visible)
         return
 
     args = [
         str(_chrome_exe()),
-        "--remote-debugging-port=9223",
+        f"--remote-debugging-port={port}",
         f"--user-data-dir={ACTIVE_PROFILE}",
         "--restore-last-session",
         "--no-first-run",
@@ -208,8 +227,8 @@ def start_flow_chrome(url: str | None = None, *, visible: bool = False) -> None:
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
-    if not wait_port(9223, 20, want_open=True):
-        raise RuntimeError("Chrome Flow không mở lại được cổng 9223.")
+    if not wait_port(port, 20, want_open=True):
+        raise RuntimeError(f"Chrome Flow không mở lại được cổng {port}.")
     time.sleep(1.0)
     set_flow_chrome_visibility(visible)
 
