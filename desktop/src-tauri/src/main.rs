@@ -14,7 +14,7 @@ use std::{
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use tauri::{RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
 #[cfg(windows)]
@@ -282,6 +282,13 @@ fn main() {
     let setup_flow_control = Arc::clone(&flow_control);
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .setup(move |app| {
             let mut boot = boot_runtime()?;
 
@@ -310,19 +317,22 @@ fn main() {
                     }
                 };
 
-            let app_handle = app.handle().clone();
-            window.on_window_event(move |event| {
-                if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                    app_handle.exit(0);
-                }
-            });
-
             if let Ok(mut guard) = setup_flow_control.lock() {
                 *guard = Some((boot.flow_port, boot.flow_key.clone()));
             }
             if let Ok(mut guard) = setup_children.lock() {
                 guard.extend(boot.children);
             }
+
+            let close_children = Arc::clone(&setup_children);
+            let close_flow_control = Arc::clone(&setup_flow_control);
+            window.on_window_event(move |event| {
+                if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                    stop_flow_chrome(&close_flow_control);
+                    stop_children(&close_children);
+                    std::process::exit(0);
+                }
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
