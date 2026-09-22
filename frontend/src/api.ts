@@ -39,9 +39,18 @@ import type {
   VideoProxyStatus,
   VideoProxyTest,
 } from './types'
+import { getRuntimeConfig, resolveApiUrl } from './runtime'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, { headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) }, ...options })
+  const runtime = getRuntimeConfig()
+  const response = await fetch(resolveApiUrl(url), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(runtime.authToken ? { 'X-TH-Media-Token': runtime.authToken } : {}),
+      ...(options?.headers || {}),
+    },
+    ...options,
+  })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
     throw new Error(payload.detail || 'Yêu cầu thất bại')
