@@ -10,6 +10,8 @@ frontend/dist/
 desktop/node_modules/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
+desktop/sidecars/
+desktop/.build/
 .vscode/
 .DS_Store
 .kilo/
