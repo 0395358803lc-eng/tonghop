@@ -54,11 +54,14 @@ export default function VideoAnalyzer({ providerId, model, provider, onOpenSetti
     api.videoProxy().then(setProxyStatus).catch(() => undefined)
   }, [])
 
+  const jobId = job?.id || ''
+  const jobStatus = job?.status || ''
+
   useEffect(() => {
-    if (!job || job.status === 'completed' || job.status === 'failed') return
+    if (!jobId || jobStatus === 'completed' || jobStatus === 'failed') return
     const timer = window.setInterval(async () => {
       try {
-        const next = await api.videoJob(job.id)
+        const next = await api.videoJob(jobId)
         setJob(next)
         if (next.status === 'failed') setError(next.error || 'Phân tích video thất bại')
       } catch (e) {
@@ -66,7 +69,7 @@ export default function VideoAnalyzer({ providerId, model, provider, onOpenSetti
       }
     }, 1400)
     return () => window.clearInterval(timer)
-  }, [job?.id, job?.status])
+  }, [jobId, jobStatus])
 
   const analyze = async (event: FormEvent) => {
     event.preventDefault()

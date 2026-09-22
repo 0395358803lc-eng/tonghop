@@ -65,7 +65,7 @@ export default function FilmContinuityControlCenter({ projectId, projectName, sc
   const [query, setQuery] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
   const [candidates, setCandidates] = useState<FilmPipelineCandidate[]>([])
-  const [now, setNow] = useState(Date.now())
+  const [now, setNow] = useState(0)
   const [junctions, setJunctions] = useState<FilmJunction[]>([])
   const [openJunctionId, setOpenJunctionId] = useState<string | null>(null)
   const [audioReqs, setAudioReqs] = useState<FilmAudioRequirements[]>([])
@@ -153,10 +153,7 @@ export default function FilmContinuityControlCenter({ projectId, projectName, sc
   }, [projectId, status?.counts?.approved])
 
   useEffect(() => {
-    if (!openId) {
-      setCandidates([])
-      return
-    }
+    if (!openId) return
     let cancelled = false
     api.filmPipelineCandidates(projectId, openId).then(data => {
       if (!cancelled) setCandidates(data.candidates || [])
@@ -167,12 +164,11 @@ export default function FilmContinuityControlCenter({ projectId, projectName, sc
   }, [projectId, openId, status?.run?.updated_at, status?.counts?.approved, status?.counts?.qc_failed])
 
   useEffect(() => {
-    if (!openId) {
-      setSnapshots([])
-      return
-    }
+    if (!openId) return
     let cancelled = false
-    setSnapshotLoading(true)
+    const loadingTimer = window.setTimeout(() => {
+      if (!cancelled) setSnapshotLoading(true)
+    }, 0)
     api.filmAcceptanceSnapshots(projectId, openId).then(data => {
       if (!cancelled) setSnapshots(data.snapshots || [])
     }).catch(() => {
@@ -180,7 +176,10 @@ export default function FilmContinuityControlCenter({ projectId, projectName, sc
     }).finally(() => {
       if (!cancelled) setSnapshotLoading(false)
     })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      window.clearTimeout(loadingTimer)
+    }
   }, [projectId, openId, status?.run?.updated_at, status?.counts?.approved])
 
   const reloadJunctions = async () => {

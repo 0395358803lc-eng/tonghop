@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, BookOpen, CheckCircle2, Clapperboard, Download, Film, Loader2, LockKeyhole, MapPin, Pause, Play, Plus, RotateCcw, Save, Sparkles, Trash2, WandSparkles } from 'lucide-react'
 import { api } from './api'
 import FilmContinuityControlCenter from './FilmContinuityControlCenter'
@@ -91,22 +91,31 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   const [flowSessionHint, setFlowSessionHint] = useState('')
   const [mediaItems, setMediaItems] = useState<FilmGeneratedMedia[]>([])
 
-  const refreshProjects = async () => setProjects(await api.filmProjects())
-  const refreshRender = async (projectId: string) => { const state = await api.filmRenderStatus(projectId); setRenderState(state); return state }
-  const refreshResources = async (projectId: string) => {
+  const refreshProjects = useCallback(async () => {
+    setProjects(await api.filmProjects())
+  }, [])
+  const refreshRender = useCallback(async (projectId: string) => {
+    const state = await api.filmRenderStatus(projectId)
+    setRenderState(state)
+    return state
+  }, [])
+  const refreshResources = useCallback(async (projectId: string) => {
     const data = await api.syncFilmResources(projectId)
     setResources(data.resources || [])
     return data.resources || []
-  }
-  const refreshMedia = async (projectId: string) => {
+  }, [])
+  const refreshMedia = useCallback(async (projectId: string) => {
     const data = await api.filmMedia(projectId)
     setMediaItems(data.media || [])
     return data.media || []
-  }
+  }, [])
 
-  useEffect(() => { refreshProjects().catch(() => undefined) }, [])
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void refreshProjects() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [refreshProjects])
 
-  const refreshFlowProduction = async (projectId?: string | null) => {
+  const refreshFlowProduction = useCallback(async (projectId?: string | null) => {
     setFlowLoading(true)
     try {
       const session = await api.testFlow()
@@ -132,8 +141,12 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       setFlowProjects(projectsData.projects)
       setFlowImageCaps(imageCaps)
       setFlowCaps(caps)
-      if (canonicalProvider === 'flow' && imageCaps.models.length && !imageCaps.models.includes(canonicalModel)) {
-        setCanonicalModel(imageCaps.models.includes('Nano Banana 2') ? 'Nano Banana 2' : imageCaps.models[0])
+      if (canonicalProvider === 'flow' && imageCaps.models.length) {
+        setCanonicalModel(prev => (
+          imageCaps.models.includes(prev)
+            ? prev
+            : (imageCaps.models.includes('Nano Banana 2') ? 'Nano Banana 2' : imageCaps.models[0])
+        ))
       }
       return true
     } catch {
@@ -146,11 +159,14 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     } finally {
       setFlowLoading(false)
     }
-  }
+  }, [canonicalProvider])
 
   useEffect(() => {
-    refreshFlowProduction(settings.flow_project_id).catch(() => undefined)
-  }, [settings.flow_project_id])
+    const timer = window.setTimeout(() => {
+      void refreshFlowProduction(settings.flow_project_id)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [refreshFlowProduction, settings.flow_project_id])
 
   useEffect(() => {
     if (flowAuthenticated !== false) return
@@ -158,13 +174,16 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       refreshFlowProduction(settings.flow_project_id).catch(() => undefined)
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [flowAuthenticated, settings.flow_project_id])
+  }, [flowAuthenticated, refreshFlowProduction, settings.flow_project_id])
+
+  const activeId = active?.id || ''
+  const activeStatus = active?.status || ''
 
   useEffect(() => {
-    if (!active || !['queued', 'analyzing'].includes(active.status)) return
+    if (!activeId || !['queued', 'analyzing'].includes(activeStatus)) return
     const timer = window.setInterval(async () => {
       try {
-        const next = await api.filmProject(active.id)
+        const next = await api.filmProject(activeId)
         setActive(next)
         if (next.status === 'ready' && next.scenes.length) setActiveSceneId(prev => prev || next.scenes[0].id)
         if (next.status === 'failed') setError(next.error || 'Phân tích dự án thất bại')
@@ -172,30 +191,33 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       } catch (e) { setError(uiErrorVi((e as Error).message)) }
     }, 1800)
     return () => window.clearInterval(timer)
-  }, [active?.id, active?.status])
+  }, [activeId, activeStatus, refreshProjects])
 
   useEffect(() => {
-    if (!active || active.status !== 'ready') return
-    refreshResources(active.id).catch(() => undefined)
-    refreshMedia(active.id).catch(() => undefined)
-  }, [active?.id, active?.status])
+    if (!activeId || activeStatus !== 'ready') return
+    const timer = window.setTimeout(() => {
+      void refreshResources(activeId)
+      void refreshMedia(activeId)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [activeId, activeStatus, refreshMedia, refreshResources])
 
   useEffect(() => {
-    if (!active || active.status !== 'ready') return
+    if (!activeId || activeStatus !== 'ready') return
     let cancelled = false
     const sync = async () => {
       try {
         const [state, resourceData] = await Promise.all([
-          api.filmRenderStatus(active.id),
-          api.filmResources(active.id),
+          api.filmRenderStatus(activeId),
+          api.filmResources(activeId),
         ])
         if (cancelled) return false
         setRenderState(state)
         setResources(resourceData.resources || [])
         const mediaBusy = (resourceData.resources || []).some(item => ['queued', 'generating', 'regenerating'].includes(String(item.metadata?.generation_status || '')) || String(item.metadata?.canonical_qc_status || '') === 'running') || state.jobs.some(job => ['waiting', 'preparing', 'generating'].includes(job.status))
-        await refreshMedia(active.id)
+        await refreshMedia(activeId)
         if (state.jobs.some(job => ['preparing', 'generating', 'completed', 'failed'].includes(job.status))) {
-          const project = await api.filmProject(active.id)
+          const project = await api.filmProject(activeId)
           if (!cancelled) setActive(project)
         }
         return mediaBusy || resourceBusy || renderBusy
@@ -211,7 +233,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     }
     tick()
     return () => { cancelled = true; if (timer) window.clearTimeout(timer) }
-  }, [active?.id, active?.status, resourceBusy, renderBusy])
+  }, [activeId, activeStatus, refreshMedia, renderBusy, resourceBusy])
 
   const selectedScene = useMemo(
     () => active?.scenes.find(scene => scene.id === activeSceneId) || active?.scenes[0] || null,
@@ -294,11 +316,20 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     return [...live, ...mediaItems]
   }, [active, mediaItems, renderState, resources])
 
+  const selectedSceneId = selectedScene?.id || ''
+  const selectedDialogueText = useMemo(
+    () => JSON.stringify(selectedScene?.dialogue || [], null, 2),
+    [selectedScene?.dialogue],
+  )
+
   useEffect(() => {
-    if (!selectedScene) return
-    setDraft({})
-    setDialogueText(JSON.stringify(selectedScene.dialogue || [], null, 2))
-  }, [selectedScene?.id])
+    if (!selectedSceneId) return
+    const timer = window.setTimeout(() => {
+      setDraft({})
+      setDialogueText(selectedDialogueText)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [selectedDialogueText, selectedSceneId])
 
   const createAndAnalyze = async () => {
     if (!story.trim() || creating) return

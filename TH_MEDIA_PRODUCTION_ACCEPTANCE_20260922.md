@@ -216,7 +216,7 @@ Acceptance gần nhất:
 - Backend unittest discovery: **207/207 PASS**
 - Narrator/Master-QC targeted regression: **21/21 PASS**
 - Frontend `npm run build`: **PASS**
-- Frontend lint: **0 errors**, còn **19 warnings** cần P2 cleanup riêng.
+- Frontend lint: **0 warnings / 0 errors**.
 - Secret/leak audit gần nhất trước release: **clean**
 
 ### Frontend code splitting
@@ -226,7 +226,7 @@ Film Studio và Video Analyzer được lazy-load theo app mode.
 Build sau tối ưu:
 
 - Initial JS: **410.82 KB** (gzip 125.50 KB)
-- Film Studio chunk: **121.22 KB** (gzip 31.67 KB)
+- Film Studio chunk: **121.95 KB** (gzip 31.81 KB)
 - Video Analyzer chunk: **14.42 KB** (gzip 4.90 KB)
 - CSS: **65.67 KB**
 
@@ -263,15 +263,15 @@ Các script chẩn đoán/acceptance tạm không bị xóa.
 - [x] Post-acceptance backup
 - [x] Narrator acoustic identity fully verified
 - [x] Frontend main bundle <500 KB
+- [x] Frontend lint 0 warnings / 0 errors
 - [x] Diagnostic scripts archived, evidence preserved
 
 ## 12. P2 còn lại
 
 Không phải production blocker:
 
-1. Giải quyết 19 frontend lint warnings theo từng component, không patch hàng loạt.
-2. Duy trì full regression + leak audit trước mỗi release.
-3. Khi thêm narrator scene mới, bắt buộc dùng cùng provider voice ID hoặc tạo migration rõ ràng cho voice contract.
+1. Duy trì full regression + leak audit trước mỗi release.
+2. Khi thêm narrator scene mới, bắt buộc dùng cùng provider voice ID hoặc tạo migration rõ ràng cho voice contract.
 
 ---
 Tài liệu này không chứa API key, token, cookie hoặc thông tin xác thực.

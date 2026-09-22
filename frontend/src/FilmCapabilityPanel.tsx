@@ -16,7 +16,18 @@ export default function FilmCapabilityPanel() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    let cancelled = false
+    api.filmCapabilityMatrix().then(next => {
+      if (!cancelled) {
+        setData(next)
+        setError('')
+      }
+    }).catch(exc => {
+      if (!cancelled) setError(exc instanceof Error ? exc.message : 'Không tải capability matrix')
+    })
+    return () => { cancelled = true }
+  }, [])
 
   const refresh = async () => {
     setBusy(true)

@@ -21,10 +21,7 @@ export default function FilmPipelineControls({ projectId, status: statusProp, sc
   const status = statusProp ?? local
 
   useEffect(() => {
-    if (statusProp !== undefined) {
-      setLocal(statusProp)
-      return
-    }
+    if (statusProp !== undefined) return
     let cancelled = false
     const tick = async () => {
       try {

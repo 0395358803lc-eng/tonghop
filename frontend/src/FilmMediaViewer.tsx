@@ -45,11 +45,32 @@ export default function FilmMediaViewer({ items, activeId, onClose, onSelect }: 
   const audio = (qc.audio_check || null) as Record<string, unknown> | null
   const speech = (qc.speech_check || null) as Record<string, unknown> | null
 
-  useEffect(() => { setCursor(Math.max(0, items.findIndex(entry => entry.id === activeId))); setZoom(1); setPreview(null) }, [activeId, items])
   useEffect(() => {
-    if (!item || item.id.startsWith('live-')) { setVersions([]); return }
-    api.filmMediaVersions(item.id).then(data => setVersions(data.versions || [])).catch(() => setVersions([]))
-  }, [item?.id])
+    const timer = window.setTimeout(() => {
+      setCursor(Math.max(0, items.findIndex(entry => entry.id === activeId)))
+      setZoom(1)
+      setPreview(null)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [activeId, items])
+
+  const itemId = item?.id || ''
+  useEffect(() => {
+    let cancelled = false
+    if (!itemId || itemId.startsWith('live-')) {
+      const timer = window.setTimeout(() => {
+        if (!cancelled) setVersions([])
+      }, 0)
+      return () => {
+        cancelled = true
+        window.clearTimeout(timer)
+      }
+    }
+    api.filmMediaVersions(itemId)
+      .then(data => { if (!cancelled) setVersions(data.versions || []) })
+      .catch(() => { if (!cancelled) setVersions([]) })
+    return () => { cancelled = true }
+  }, [itemId])
 
   const neighbors = useMemo(() => ({ prev: cursor > 0, next: cursor < items.length - 1 }), [cursor, items.length])
   if (!item) return null
