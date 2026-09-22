@@ -1,13 +1,22 @@
 import json
 import os
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = ROOT / ".data"
-CONFIG_PATH = DATA_DIR / "flow_bridge_config.json"
+
+def _runtime_path(env_name: str, default: Path) -> Path:
+    raw = os.getenv(env_name)
+    value = Path(os.path.expandvars(raw)).expanduser() if raw else default
+    return value.resolve()
+
+
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
+ROOT = _runtime_path("TH_MEDIA_ROOT", RUNTIME_ROOT)
+DATA_DIR = _runtime_path("TH_MEDIA_DATA_DIR", ROOT / ".data")
+CONFIG_PATH = _runtime_path("TH_MEDIA_FLOW_CONFIG_PATH", DATA_DIR / "flow_bridge_config.json")
 DEFAULT_CDP_URL = "http://127.0.0.1:9223"
 DEFAULT_FLOW_URL = "https://flow.google.com/"
-
 
 def load_config() -> dict:
     data = {}
@@ -21,15 +30,3 @@ def load_config() -> dict:
         "cdp_url": os.getenv("FLOW_CDP_URL") or data.get("cdp_url") or DEFAULT_CDP_URL,
         "flow_url": os.getenv("FLOW_URL") or data.get("flow_url") or DEFAULT_FLOW_URL,
     }
-
-
-def ensure_config(api_key: str) -> dict:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    current = load_config()
-    payload = {
-        "api_key": api_key,
-        "cdp_url": current["cdp_url"],
-        "flow_url": current["flow_url"],
-    }
-    CONFIG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return payload
