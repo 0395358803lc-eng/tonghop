@@ -13,7 +13,7 @@ import httpx
 from playwright.async_api import Browser, Page, Playwright, async_playwright
 
 from .config import DATA_DIR, load_config
-from .sessions import port_open, set_flow_chrome_visibility, start_flow_chrome
+from .sessions import ACTIVE_PROFILE, port_open, set_flow_chrome_visibility, start_flow_chrome
 
 
 class FlowBrowserError(RuntimeError):
@@ -1440,7 +1440,7 @@ class FlowBrowser:
     async def open_login_window(self) -> dict:
         # Never spawn a second Chrome window for login. Connect to the dedicated
         # persistent profile and bring its canonical Flow/login tab back on screen.
-        profile = DATA_DIR / "flow_chrome_profile"
+        profile = ACTIVE_PROFILE
         profile.mkdir(parents=True, exist_ok=True)
         cfg = load_config()
 

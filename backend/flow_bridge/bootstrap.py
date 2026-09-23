@@ -1,3 +1,4 @@
+import os
 import secrets
 import sys
 from pathlib import Path
@@ -16,8 +17,11 @@ def main() -> None:
     api_key = str(cfg.get("api_key") or "")
     if not api_key:
         api_key = "thflow_" + secrets.token_urlsafe(48)
-        ensure_config(api_key)
-    save_flow_settings("http://127.0.0.1:8765", api_key, True)
+        cfg = ensure_config(api_key=api_key)
+
+    host = os.getenv("TH_MEDIA_FLOW_BRIDGE_HOST", "127.0.0.1")
+    port = int(os.getenv("TH_MEDIA_FLOW_BRIDGE_PORT", "8765"))
+    save_flow_settings(f"http://{host}:{port}", api_key, True)
     print("Flow Bridge local config synchronized with TH Media.")
 
 
