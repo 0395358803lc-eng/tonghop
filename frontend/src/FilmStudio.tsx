@@ -157,9 +157,9 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
         setFlowImageCaps(null)
         setFlowSessionHint(
           sessionUrl.includes('accounts.google.com')
-            ? 'Cửa sổ Chrome đang ở trang đăng nhập Google. Hãy hoàn tất đăng nhập, rồi bấm Làm mới danh sách mô hình.'
+            ? 'Trình duyệt Flow đang ở trang đăng nhập Google. Hãy hoàn tất đăng nhập, rồi bấm Làm mới danh sách mô hình.'
             : sessionUrl.includes('/about')
-              ? 'Chrome mới mở trang giới thiệu Flow, chưa vào workspace. Bấm Mở đăng nhập để vào tài khoản.'
+              ? 'Trình duyệt mới mở trang giới thiệu Flow, chưa vào workspace. Bấm Mở đăng nhập để vào tài khoản.'
               : 'Phiên Flow chưa sẵn sàng. Bấm Mở đăng nhập, đăng nhập Google, rồi tải lại mô hình.'
         )
         return false
@@ -188,7 +188,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       setFlowSessionHint(
         message.includes('Chưa kết nối Internet')
           ? 'Chưa kết nối Internet. Dự án local vẫn sử dụng được; Flow sẽ hoạt động lại khi mạng trở lại.'
-          : 'Không kết nối được Chrome Flow. Bấm Mở đăng nhập để khởi động lại phiên.'
+          : 'Không kết nối được trình duyệt Flow. Bấm Mở đăng nhập để khởi động lại phiên.'
       )
       return false
     } finally {
@@ -1164,7 +1164,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
                 <strong>{flowAuthenticated === true ? 'Đã đăng nhập' : flowAuthenticated === false ? 'Chưa vào workspace Flow' : 'Đang kết nối phiên...'}</strong>
                 <em>{flowAuthenticated === true
                   ? (settings.flow_project_id ? `Dự án ${settings.flow_project_id.slice(0, 8)}` : 'Tự động: dự án Flow mới nhất')
-                  : (flowSessionHint || 'Email trên thanh trên chỉ là phiên đã lưu. Cần đăng nhập xong trong Chrome mới chọn được mô hình.')}</em>
+                  : (flowSessionHint || 'Email trên thanh trên chỉ là phiên đã lưu. Cần đăng nhập xong trong Chrome/Edge mới chọn được mô hình.')}</em>
               </div>
               <label>
                 Nguồn tạo ảnh chuẩn
@@ -1212,7 +1212,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
                 >
                   <option value="">
                     {flowAuthenticated !== true
-                      ? (flowLoading ? 'Đang mở Chrome Flow...' : 'Chưa kết nối được phiên Flow')
+                      ? (flowLoading ? 'Đang mở trình duyệt Flow...' : 'Chưa kết nối được phiên Flow')
                       : flowLoading
                         ? 'Đang đọc mô hình từ Flow...'
                         : 'Giữ mô hình hiện tại của Flow'}

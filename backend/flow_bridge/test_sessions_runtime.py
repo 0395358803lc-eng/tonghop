@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,22 @@ class FlowSessionRuntimeTests(unittest.TestCase):
             return_value={"cdp_url": "http://127.0.0.1:19321"},
         ):
             self.assertEqual(sessions.cdp_port(), 19321)
+
+    def test_browser_falls_back_to_microsoft_edge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            program_files = Path(tmp) / "ProgramFiles"
+            edge = program_files / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+            edge.parent.mkdir(parents=True)
+            edge.write_bytes(b"fake-edge")
+            env = {
+                "TH_MEDIA_CHROME_PATH": "",
+                "TH_MEDIA_BROWSER_PATH": "",
+                "ProgramFiles": str(program_files),
+                "ProgramFiles(x86)": str(Path(tmp) / "ProgramFilesX86"),
+                "LOCALAPPDATA": str(Path(tmp) / "LocalAppData"),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                self.assertEqual(sessions._chrome_exe(), edge)
 
     def test_start_flow_chrome_uses_runtime_cdp_port(self):
         with tempfile.TemporaryDirectory() as tmp:

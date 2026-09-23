@@ -1,6 +1,6 @@
 [package]
 name = "th-media-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "TH Media Windows desktop shell"
 authors = ["TH Media"]
 edition = "2021"

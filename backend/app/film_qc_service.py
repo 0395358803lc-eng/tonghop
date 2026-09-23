@@ -12,7 +12,7 @@ from pathlib import Path
 import av
 import httpx
 
-from runtime_dependencies import ffmpeg_path
+from runtime_dependencies import ffmpeg_path, whisper_model_path
 
 from .config import LEGACY_MEDIA_DIRS, MEDIA_DIR
 from .provider_store import get_provider, list_saved
@@ -175,7 +175,8 @@ def _transcribe_speech_sync(video_path: Path, expected_lines: list[str]) -> dict
 
     with _STT_LOCK:
         if _STT_MODEL is None:
-            _STT_MODEL = WhisperModel(QC_STT_MODEL, device="cpu", compute_type="int8")
+            model_source = whisper_model_path(QC_STT_MODEL)
+            _STT_MODEL = WhisperModel(model_source, device="cpu", compute_type="int8")
         segments, info = _STT_MODEL.transcribe(
             str(video_path),
             beam_size=1,

@@ -235,7 +235,7 @@ function App() {
       await setAutostartEnabled(desktopAutostart)
       setDesktopSettings(saved)
       setDesktopDraft(saved)
-      setDesktopSettingsMessage('Đã lưu cài đặt Desktop. Chrome, temp, log và minimize-to-tray sẽ áp dụng hoàn toàn sau khi khởi động lại.')
+      setDesktopSettingsMessage('Đã lưu cài đặt Desktop. Trình duyệt Flow, temp, log và minimize-to-tray sẽ áp dụng hoàn toàn sau khi khởi động lại.')
     } catch (e) {
       setDesktopSettingsMessage(`Không thể lưu cài đặt Desktop: ${(e as Error).message}`)
     } finally {
@@ -245,7 +245,7 @@ function App() {
 
   const chooseDesktopChrome = async () => {
     if (!desktopDraft) return
-    const selected = await open({ multiple: false, directory: false, title: 'Chọn Google Chrome', filters: [{ name: 'Google Chrome', extensions: ['exe'] }] })
+    const selected = await open({ multiple: false, directory: false, title: 'Chọn Chrome hoặc Microsoft Edge', filters: [{ name: 'Chrome hoặc Edge', extensions: ['exe'] }] })
     if (!selected || Array.isArray(selected)) return
     setDesktopDraft({ ...desktopDraft, chrome_path: selected })
   }
@@ -345,7 +345,7 @@ function App() {
         const result = await api.testFlow()
         setFlowAuthenticated(result.authenticated)
       }
-      setFlowMessage('Đã lưu Flow Bridge. Phiên Google được giữ trực tiếp trong Chrome profile riêng của Flow.')
+      setFlowMessage('Đã lưu Flow Bridge. Phiên Google được giữ trực tiếp trong profile trình duyệt riêng của Flow.')
       setError('')
     } catch (e) { setError((e as Error).message) }
   }
@@ -357,7 +357,7 @@ function App() {
     try {
       await ensureFlowRuntime()
       const result = await api.openFlowLogin()
-      setFlowMessage(result.message || 'Đã mở lại Chrome Flow profile. Hoàn tất đăng nhập; ứng dụng sẽ tự phát hiện trạng thái thành công.')
+      setFlowMessage(result.message || 'Đã mở lại trình duyệt Flow. Hoàn tất đăng nhập; ứng dụng sẽ tự phát hiện trạng thái thành công.')
       setFlowAuthenticated(false)
       setError('')
 
@@ -377,7 +377,7 @@ function App() {
             setFlowStatus(status)
             setFlowMetrics(metrics)
             applySessionList(sessions)
-            setFlowMessage('Đăng nhập Google Flow thành công. Chrome profile hiện tại đã được giữ nguyên và tab Flow đang chạy ẩn trong nền.')
+            setFlowMessage('Đăng nhập Google Flow thành công. Profile trình duyệt hiện tại đã được giữ nguyên và tab Flow đang chạy ẩn trong nền.')
           } else if (attempts >= 150) {
             clearFlowLoginTimer()
             setFlowMessage('Chưa phát hiện đăng nhập Flow sau 5 phút. Bấm Đăng nhập để mở lại đúng tab hiện tại và tiếp tục.')
@@ -397,7 +397,7 @@ function App() {
       await ensureFlowRuntime()
       const result = await api.testFlow()
       setFlowAuthenticated(result.authenticated)
-      setFlowMessage(result.authenticated ? 'Flow Bridge hoạt động và Chrome profile đang giữ phiên Flow.' : 'Flow cần đăng nhập lại. Bấm Đăng nhập, đăng nhập trong Chrome rồi bấm Kiểm tra.')
+      setFlowMessage(result.authenticated ? 'Flow Bridge hoạt động và profile trình duyệt đang giữ phiên Flow.' : 'Flow cần đăng nhập lại. Bấm Đăng nhập, hoàn tất đăng nhập trong Chrome/Edge rồi bấm Kiểm tra.')
       setFlowStatus(await api.flowStatus())
       setFlowMetrics(await api.flowMetrics())
       applySessionList(await api.flowSessions())
@@ -678,7 +678,7 @@ function App() {
 
                   <div className="desktop-settings-block">
                     <div className="desktop-settings-block-title"><Power size={14} /><b>Google Flow runtime</b></div>
-                    <div className="desktop-path-row"><div><span>Google Chrome</span><code title={desktopDraft.chrome_path || 'Tự động tìm Chrome'}>{desktopDraft.chrome_path || 'Tự động tìm Chrome đã cài trên máy'}</code></div><button onClick={chooseDesktopChrome}><FolderOpen size={12} /> Chọn chrome.exe</button></div>
+                    <div className="desktop-path-row"><div><span>Trình duyệt Flow</span><code title={desktopDraft.chrome_path || 'Tự động tìm Chrome/Edge'}>{desktopDraft.chrome_path || 'Tự động ưu tiên Chrome, fallback Microsoft Edge'}</code></div><button onClick={chooseDesktopChrome}><FolderOpen size={12} /> Chọn browser.exe</button></div>
                     <div className="desktop-path-meta">Flow profile: <code>{desktopDraft.paths.flow_profile_dir}</code></div>
                     <div className="desktop-path-meta">Phiên hiện tại: <b>{flowAccount || (flowAuthenticated ? 'Đã đăng nhập' : 'Chưa đăng nhập')}</b> · {flowSessions.length} phiên đã lưu</div>
                   </div>

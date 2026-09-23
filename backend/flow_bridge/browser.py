@@ -158,6 +158,26 @@ def model_selection_variants(model: str | None) -> list[str]:
     return canonical_video_model_variants(raw)
 
 
+def resolution_selection_state(requested: str, summary_text: str = "", visible_texts: list[str] | None = None) -> str:
+    """Classify Flow resolution UI without inventing unsupported fallbacks.
+
+    Some Flow models expose a fixed/default resolution and therefore render no
+    resolution selector at all. In that case absence of a button is not a
+    capability mismatch. A mismatch is only proven when the UI visibly exposes
+    a different resolution.
+    """
+    wanted = str(requested or "").strip().lower()
+    observed: set[str] = set()
+    for text in [summary_text, *(visible_texts or [])]:
+        for match in re.finditer(r"\b\d{3,4}p\b", str(text or "").lower()):
+            observed.add(match.group(0))
+    if wanted and wanted in observed:
+        return "active"
+    if observed:
+        return "mismatch"
+    return "fixed_default"
+
+
 # Ordered fallback strategy for the Flow model selector (report §20):
 # 1. aria-label canonical (Vietnamese UI: "Chon nhom mo hinh" contains "mo hinh")
 # 2. role=button + visible text (Veo/Omni + dropdown arrow)
@@ -793,10 +813,39 @@ class FlowBrowser:
             await resolution_button.first.click(force=True)
             await page.wait_for_timeout(150)
         else:
-            summary = page.locator('button[aria-label*="cài đặt"]').first
-            summary_text = (await summary.inner_text()).replace("\n", " ") if await summary.count() else ""
-            if resolution not in summary_text:
-                raise FlowBrowserError(f"Resolution {resolution} không khả dụng trên model hiện tại.")
+            # Some models expose resolution as a fixed/default value and Flow
+            # removes the selector entirely. Treat that as compatible unless
+            # the UI visibly exposes a different resolution.
+            requested_option = page.locator("button:visible").filter(
+                has_text=re.compile(rf"\b{re.escape(resolution)}\b", re.I)
+            )
+            if await requested_option.count():
+                await requested_option.first.click(force=True)
+                await page.wait_for_timeout(150)
+            else:
+                summary = page.locator('button[aria-label*="cài đặt"]').first
+                summary_text = (await summary.inner_text()).replace("\n", " ") if await summary.count() else ""
+                visible_resolution_buttons = page.locator("button:visible").filter(
+                    has_text=re.compile(r"\b\d{3,4}p\b", re.I)
+                )
+                visible_resolution_texts: list[str] = []
+                for i in range(min(await visible_resolution_buttons.count(), 20)):
+                    try:
+                        visible_resolution_texts.append(
+                            (await visible_resolution_buttons.nth(i).inner_text(timeout=1000)).strip().replace("\n", " ")
+                        )
+                    except Exception:
+                        continue
+                resolution_state = resolution_selection_state(
+                    resolution,
+                    summary_text,
+                    visible_resolution_texts,
+                )
+                if resolution_state == "mismatch":
+                    evidence = await self._selector_evidence(page)
+                    raise FlowBrowserError(
+                        f"Resolution {resolution} không khả dụng trên model hiện tại. evidence={evidence}"
+                    )
 
         await self._ensure_settings_open(page)
         duration_button = page.locator("button:visible").filter(has_text=re.compile(rf"^\s*{duration}\b"))

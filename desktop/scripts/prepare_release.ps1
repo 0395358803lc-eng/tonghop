@@ -41,6 +41,12 @@ if (-not (Test-Path (Join-Path $Runtime "bin\ffmpeg.exe"))) {
 if (-not (Test-Path (Join-Path $Runtime "bin\ffprobe.exe"))) {
     throw "Release runtime is missing ffprobe.exe"
 }
+if (-not (Test-Path (Join-Path $Runtime "models\whisper\base\model.bin"))) {
+    throw "Release runtime is missing bundled faster-whisper base model"
+}
+if (-not (Test-Path (Join-Path $Runtime "models\whisper\base\config.json"))) {
+    throw "Release runtime is missing bundled faster-whisper base config"
+}
 if (-not (Test-Path (Join-Path $Sidecars "th-media-backend\th-media-backend.exe"))) {
     throw "Release backend sidecar is missing"
 }

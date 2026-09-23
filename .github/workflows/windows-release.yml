@@ -1,0 +1,259 @@
+name: Windows Full Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish/refresh GitHub Release after build"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUTF8: "1"
+      CARGO_INCREMENTAL: "0"
+      HF_HUB_DISABLE_XET: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $cfg = Get-Content 'desktop\src-tauri\tauri.conf.json' -Raw | ConvertFrom-Json
+          $version = [string]$cfg.version
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+          Write-Output "Building TH Media $version"
+
+      - name: Verify tag matches application version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $expected = "v${{ steps.meta.outputs.version }}"
+          $actual = "${{ github.ref_name }}"
+          if ($actual -ne $expected) {
+            throw "Tag $actual does not match tauri.conf.json version $expected"
+          }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Rust stable
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Ensure FFmpeg
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y --no-progress
+          }
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt pyinstaller
+          npm ci --prefix frontend
+          npm ci --prefix desktop
+
+      - name: Run regression suite
+        shell: pwsh
+        run: |
+          Set-Location backend
+          $mods = @()
+          $mods += Get-ChildItem 'app\test_*.py' | ForEach-Object { 'app.' + $_.BaseName }
+          $mods += Get-ChildItem 'flow_bridge\test_*.py' | ForEach-Object { 'flow_bridge.' + $_.BaseName }
+          python -m unittest $mods
+          Set-Location ..
+          npm --prefix frontend run build
+          npm --prefix frontend run lint
+          Set-Location desktop\src-tauri
+          cargo test
+          cargo check
+
+      - name: Optional Authenticode certificate
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.TH_MEDIA_CODE_SIGN_PFX_B64 }}
+          PFX_PASSWORD: ${{ secrets.TH_MEDIA_CODE_SIGN_PFX_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PFX_B64)) {
+            "TH_MEDIA_REQUIRE_CODE_SIGN=0" >> $env:GITHUB_ENV
+            "TH_MEDIA_SIGNING_STATUS=UNSIGNED_NO_CERTIFICATE" >> $env:GITHUB_ENV
+            Write-Warning "No production code-signing certificate secret is configured. Release will be unsigned."
+            exit 0
+          }
+
+          $pfx = Join-Path $env:RUNNER_TEMP 'th-media-code-sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+          $secure = ConvertTo-SecureString ($env:PFX_PASSWORD ?? '') -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation 'Cert:\CurrentUser\My' -Password $secure
+          if (-not $cert -or -not $cert.HasPrivateKey) {
+            throw 'Imported code-signing certificate does not have a private key.'
+          }
+          "TH_MEDIA_CODE_SIGN_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+          "TH_MEDIA_REQUIRE_CODE_SIGN=1" >> $env:GITHUB_ENV
+          "TH_MEDIA_SIGNING_STATUS=SIGNED" >> $env:GITHUB_ENV
+          Remove-Item $pfx -Force
+
+      - name: Build Tauri executable and release resources
+        shell: pwsh
+        run: |
+          Set-Location desktop
+          npm run tauri -- build --no-bundle
+
+      - name: Sign executable and sidecars before bundle
+        if: env.TH_MEDIA_SIGNING_STATUS == 'SIGNED'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\sign_windows_release.ps1' -ProjectRoot . -Phase PreBundle
+
+      - name: Bundle NSIS with offline WebView2
+        shell: pwsh
+        run: |
+          Set-Location desktop
+          npm run tauri -- bundle -b nsis
+
+      - name: Sign installer after bundle
+        if: env.TH_MEDIA_SIGNING_STATUS == 'SIGNED'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\sign_windows_release.ps1' -ProjectRoot . -Phase PostBundle
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\sign_windows_release.ps1' -ProjectRoot . -Phase Verify
+
+      - name: Verify self-contained release resources
+        shell: pwsh
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          $installer = "desktop\src-tauri\target\release\bundle\nsis\TH Media_" + $version + "_x64-setup.exe"
+          if (-not (Test-Path $installer -PathType Leaf)) { throw "Installer missing: $installer" }
+
+          $runtime = 'desktop\runtime'
+          $required = @(
+            "$runtime\bin\ffmpeg.exe",
+            "$runtime\bin\ffprobe.exe",
+            "$runtime\models\speaker\3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
+            "$runtime\models\whisper\base\model.bin",
+            "$runtime\models\whisper\base\config.json",
+            'desktop\sidecars\th-media-backend\th-media-backend.exe',
+            'desktop\sidecars\th-media-flow-bridge\th-media-flow-bridge.exe'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path -PathType Leaf)) { throw "Release dependency missing: $path" }
+          }
+
+          if ((Get-Item "$runtime\models\whisper\base\model.bin").Length -lt 50MB) {
+            throw 'Bundled Whisper model is unexpectedly small.'
+          }
+
+          $nsi = 'desktop\src-tauri\target\release\nsis\x64\installer.nsi'
+          if (-not (Test-Path $nsi -PathType Leaf)) { throw 'Generated NSIS script missing.' }
+          $nsiText = Get-Content $nsi -Raw
+          if ($nsiText -notmatch 'INSTALLWEBVIEW2MODE "offlineInstaller"') {
+            throw 'NSIS installer is not configured for offline WebView2.'
+          }
+          Write-Output 'SELF_CONTAINED_RESOURCE_CHECK=PASS'
+
+      - name: Clean-machine runtime smoke
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\clean_machine_smoke.ps1'
+
+      - name: Installed Setup.exe smoke
+        shell: pwsh
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          $installer = "desktop\src-tauri\target\release\bundle\nsis\TH Media_" + $version + "_x64-setup.exe"
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\installed_package_smoke.ps1' -Installer $installer
+
+      - name: Create release hashes and status
+        id: package
+        shell: pwsh
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          $installer = "desktop\src-tauri\target\release\bundle\nsis\TH Media_" + $version + "_x64-setup.exe"
+          $shaPath = "$installer.sha256"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+          "$hash  TH Media_$($version)_x64-setup.exe" | Set-Content -LiteralPath $shaPath -Encoding ascii
+          $statusPath = "desktop\src-tauri\target\release\bundle\nsis\SIGNING_STATUS.txt"
+          @(
+            "TH Media $version",
+            "Authenticode=$env:TH_MEDIA_SIGNING_STATUS",
+            "WebView2=offlineInstaller",
+            "WhisperBase=bundled",
+            "FlowBrowser=Chrome_or_Edge",
+            "SHA256=$hash"
+          ) | Set-Content -LiteralPath $statusPath -Encoding utf8
+          "installer=$installer" >> $env:GITHUB_OUTPUT
+          "sha=$shaPath" >> $env:GITHUB_OUTPUT
+          "status=$statusPath" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TH-Media-${{ steps.meta.outputs.version }}-Windows
+          path: |
+            ${{ steps.package.outputs.installer }}
+            ${{ steps.package.outputs.sha }}
+            ${{ steps.package.outputs.status }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish or refresh GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $version = "${{ steps.meta.outputs.version }}"
+          $installer = "${{ steps.package.outputs.installer }}"
+          $sha = "${{ steps.package.outputs.sha }}"
+          $status = "${{ steps.package.outputs.status }}"
+          $notes = 'desktop\RELEASE_NOTES_0.1.1.md'
+
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $installer $sha $status --clobber
+          } else {
+            gh release create $tag $installer $sha $status --target "${{ github.sha }}" --title "TH Media Desktop $version" --notes-file $notes --latest
+          }

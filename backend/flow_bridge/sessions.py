@@ -29,16 +29,28 @@ def _now() -> str:
 
 
 def _chrome_exe() -> Path:
-    configured = os.getenv("TH_MEDIA_CHROME_PATH")
+    """Resolve the Chromium browser used by Flow.
+
+    A user-configured executable wins. Google Chrome is preferred for backward
+    compatibility; Microsoft Edge is the clean-machine fallback because it is
+    distributed with supported Windows 10/11 installations and supports the
+    same Chromium remote-debugging flags used by the Flow bridge.
+    """
+    configured = os.getenv("TH_MEDIA_CHROME_PATH") or os.getenv("TH_MEDIA_BROWSER_PATH")
     candidates = [Path(configured).expanduser()] if configured else []
     for env_name in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
         base = os.getenv(env_name)
-        if base:
-            candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
-    chrome = next((path for path in candidates if path.exists()), None)
-    if chrome is None:
-        raise RuntimeError("Không tìm thấy Google Chrome trên máy.")
-    return chrome
+        if not base:
+            continue
+        root = Path(base)
+        candidates.extend([
+            root / "Google" / "Chrome" / "Application" / "chrome.exe",
+            root / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        ])
+    browser = next((path for path in candidates if path.is_file()), None)
+    if browser is None:
+        raise RuntimeError("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy.")
+    return browser
 
 
 def load_registry() -> dict:
@@ -104,8 +116,8 @@ def os_walk(src: Path):
 def chrome_pids(profile: Path | None = None) -> list[int]:
     needle = str(profile or ACTIVE_PROFILE).replace("'", "''")
     cmd = (
-        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
-        f"Where-Object {{ $_.CommandLine -like '*{needle}*' }} | "
+        "Get-CimInstance Win32_Process | "
+        f"Where-Object {{ $_.Name -in @('chrome.exe','msedge.exe') -and $_.CommandLine -like '*{needle}*' }} | "
         "Select-Object -ExpandProperty ProcessId"
     )
     try:
