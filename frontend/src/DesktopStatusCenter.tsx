@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Activity, Bot, CircleAlert, Database, Gauge, HardDrive, Mic2, Workflow } from 'lucide-react'
+import { Activity, Bot, CircleAlert, Clapperboard, Database, Gauge, HardDrive, Image as ImageIcon, Mic2, Workflow } from 'lucide-react'
 import { api } from './api'
 import { getRuntimeConfig } from './runtime'
 import type { DesktopReadyStatus, Provider } from './types'
@@ -15,6 +15,13 @@ type StatusRowProps = {
   value: string
   state: 'ok' | 'warn' | 'error' | 'muted'
   title?: string
+}
+
+function formatModels(models?: string[]) {
+  const items = (models || []).filter(Boolean)
+  if (!items.length) return 'Chưa có'
+  if (items.length <= 2) return items.join(', ')
+  return `${items.slice(0, 2).join(', ')} +${items.length - 2}`
 }
 
 function StatusRow({ icon, label, value, state, title }: StatusRowProps) {
@@ -64,6 +71,9 @@ export default function DesktopStatusCenter({ provider, model }: Props) {
   const storageLow = typeof storage?.free_gb === 'number' && storage.free_gb < 10
   const activePipelines = status?.runtime?.active_pipelines || 0
   const aiReady = Boolean(provider?.configured)
+  const flowProjectUsable = Boolean(status?.flow?.session?.project_usable)
+  const videoModels = status?.capabilities?.video_models || []
+  const imageModels = status?.capabilities?.image_models || []
   const overallState = unreachable ? 'error' : status?.ready ? 'ok' : status ? 'warn' : 'muted'
   const overallLabel = unreachable ? 'Mất kết nối' : status?.ready ? 'Sẵn sàng' : status ? 'Cần kiểm tra' : 'Đang kiểm tra'
 
@@ -89,8 +99,10 @@ export default function DesktopStatusCenter({ provider, model }: Props) {
       <StatusRow
         icon={<Workflow size={12} />}
         label="Google Flow"
-        value={checks?.flow_authenticated ? 'Đã đăng nhập' : checks?.flow_configured ? 'Cần đăng nhập' : 'Chưa sẵn sàng'}
-        state={checks?.flow_authenticated ? 'ok' : status ? 'warn' : 'muted'}
+        value={checks?.flow_authenticated
+          ? (flowProjectUsable ? 'Đã đăng nhập · Project OK' : 'Đã đăng nhập · Project chưa sẵn sàng')
+          : checks?.flow_configured ? 'Cần đăng nhập' : 'Chưa sẵn sàng'}
+        state={checks?.flow_authenticated && flowProjectUsable ? 'ok' : status ? 'warn' : 'muted'}
       />
       <StatusRow
         icon={<Bot size={12} />}
@@ -110,6 +122,20 @@ export default function DesktopStatusCenter({ provider, model }: Props) {
         label="Capability"
         value={checks?.capability_matrix_fresh ? 'Mới' : status ? 'Cần làm mới' : '...'}
         state={checks?.capability_matrix_fresh ? 'ok' : status ? 'warn' : 'muted'}
+      />
+      <StatusRow
+        icon={<Clapperboard size={12} />}
+        label="Video model"
+        value={formatModels(videoModels)}
+        state={checks?.capability_matrix_fresh && videoModels.length ? 'ok' : status ? 'warn' : 'muted'}
+        title={videoModels.length ? videoModels.join(' · ') : undefined}
+      />
+      <StatusRow
+        icon={<ImageIcon size={12} />}
+        label="Image model"
+        value={formatModels(imageModels)}
+        state={imageModels.length ? 'ok' : status ? 'warn' : 'muted'}
+        title={imageModels.length ? imageModels.join(' · ') : undefined}
       />
       <StatusRow
         icon={<HardDrive size={12} />}

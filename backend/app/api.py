@@ -106,6 +106,18 @@ async def ready():
         storage = None
 
     configured_providers = sorted(list(list_saved().keys()))
+    video_models = sorted({
+        str(item.get("model") or "").strip()
+        for item in list_capability_matrix(media_type="video")
+        if str(item.get("model") or "").strip()
+        and str(item.get("model") or "").strip().lower() != "unknown"
+    })
+    image_models = sorted({
+        str(item.get("model") or "").strip()
+        for item in list_capability_matrix(media_type="image")
+        if str(item.get("model") or "").strip()
+        and str(item.get("model") or "").strip().lower() != "unknown"
+    })
     return {
         "ok": ready_ok,
         "ready": ready_ok,
@@ -118,6 +130,10 @@ async def ready():
             "active_pipelines": len(list_active_runs()),
             "configured_providers": configured_providers,
             "configured_provider_count": len(configured_providers),
+        },
+        "capabilities": {
+            "video_models": video_models,
+            "image_models": image_models,
         },
         "storage": storage,
     }

@@ -864,6 +864,10 @@ export type DesktopReadyStatus = {
     configured_providers?: string[]
     configured_provider_count?: number
   }
+  capabilities?: {
+    video_models?: string[]
+    image_models?: string[]
+  }
   storage?: {
     total_bytes: number
     used_bytes: number
