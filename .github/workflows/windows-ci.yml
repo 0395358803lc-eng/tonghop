@@ -61,6 +61,25 @@ jobs:
           npm ci --prefix frontend
           npm ci --prefix desktop
 
+      - name: Ensure FFmpeg for media tests
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y --no-progress
+            $chocoBin = 'C:\ProgramData\chocolatey\bin'
+            $chocoFfmpeg = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg*\tools' -Recurse -File -Filter ffmpeg.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($chocoFfmpeg) {
+              $ffmpegDir = $chocoFfmpeg.DirectoryName
+              $ffmpegDir >> $env:GITHUB_PATH
+              $env:PATH = "$ffmpegDir;$env:PATH"
+            } elseif (Test-Path $chocoBin) {
+              $chocoBin >> $env:GITHUB_PATH
+              $env:PATH = "$chocoBin;$env:PATH"
+            }
+          }
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
       - name: Backend and Flow tests
         shell: pwsh
         run: |
