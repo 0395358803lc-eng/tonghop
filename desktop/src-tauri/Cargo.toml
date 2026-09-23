@@ -1,0 +1,20 @@
+[package]
+name = "th-media-desktop"
+version = "0.1.1"
+description = "TH Media Windows desktop shell"
+authors = ["TH Media"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.5", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-autostart = "2"

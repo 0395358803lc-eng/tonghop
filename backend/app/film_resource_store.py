@@ -8,8 +8,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from .config import DATA_DIR
 from .db import connect
+from .film_media_store import project_media_root
 from .film_store import get_film_project
 
 
@@ -225,7 +225,7 @@ def save_canonical_asset(
     except Exception as exc:
         raise ValueError("File canonical không phải ảnh hợp lệ.") from exc
 
-    folder = DATA_DIR / "film_assets" / project_id / resource_type / entity_id
+    folder = project_media_root(project_id) / "film_assets" / resource_type / entity_id
     folder.mkdir(parents=True, exist_ok=True)
     metadata = dict(resource.get("metadata") or {})
 

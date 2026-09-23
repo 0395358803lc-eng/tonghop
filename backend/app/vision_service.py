@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import json
 import os
 import shutil
@@ -8,11 +8,11 @@ import av
 import httpx
 from PIL import Image
 
-from .config import DATA_DIR
+from .config import DATA_DIR, MEDIA_DIR
 from .providers.vision import run_vision
 from .video_store import update_video_job
 
-FRAMES_ROOT = DATA_DIR / "video_frames"
+FRAMES_ROOT = MEDIA_DIR / "video_frames"
 FRAMES_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_FRAMES = max(3, min(int(os.getenv("VIDEO_VISION_MAX_FRAMES", "8")), 12))
 MAX_WIDTH = max(320, min(int(os.getenv("VIDEO_VISION_MAX_WIDTH", "640")), 1280))
@@ -67,10 +67,10 @@ def extract_keyframes(video_path: str, job_id: str, duration_hint: float = 0) ->
     try:
         stream = next((s for s in container.streams if s.type == "video"), None)
         if stream is None:
-            raise RuntimeError("Luồng media không chứa hình ảnh video")
+            raise RuntimeError("Luá»“ng media khÃ´ng chá»©a hÃ¬nh áº£nh video")
         duration = _duration_seconds(container, stream, duration_hint)
         if duration <= 0:
-            raise RuntimeError("Không xác định được thời lượng video để lấy keyframe")
+            raise RuntimeError("KhÃ´ng xÃ¡c Ä‘á»‹nh Ä‘Æ°á»£c thá»i lÆ°á»£ng video Ä‘á»ƒ láº¥y keyframe")
         count = _frame_count(duration)
         timestamps = [duration * (i + 0.5) / count for i in range(count)]
         frames = []
@@ -106,7 +106,7 @@ def extract_keyframes(video_path: str, job_id: str, duration_hint: float = 0) ->
                 "url": f"/api/video/jobs/{job_id}/frames/{filename}",
             })
         if not frames:
-            raise RuntimeError("Không trích xuất được keyframe từ video")
+            raise RuntimeError("KhÃ´ng trÃ­ch xuáº¥t Ä‘Æ°á»£c keyframe tá»« video")
         return frames
     finally:
         container.close()
@@ -135,8 +135,8 @@ def _error_detail(exc: Exception) -> str:
 async def analyze_keyframes(job: dict, credentials: dict, keyframes: list[dict]) -> tuple[str, str, str]:
     images = load_frame_payloads(job["id"], keyframes)
     if not images:
-        return "", "failed", "Không đọc được dữ liệu keyframe đã trích xuất"
-    prompt = """Bạn đang xem các keyframe đại diện được lấy theo timeline của một video. Hãy chỉ mô tả những gì thực sự quan sát thấy trong ảnh, không suy đoán lời thoại. Phân tích bằng tiếng Việt và tạo ghi chú thị giác có cấu trúc gồm: (1) diễn biến hình ảnh theo mốc thời gian; (2) nhân vật/người xuất hiện và hành động có thể quan sát; (3) bối cảnh, vật thể, sản phẩm; (4) chữ/overlay/logo có thể đọc được; (5) phong cách quay, bố cục, màu sắc, chuyển biến cảnh; (6) visual hook và yếu tố giữ người xem; (7) các chi tiết không chắc chắn phải ghi rõ là không chắc chắn. Mỗi nhận xét quan trọng nên gắn timestamp của frame tương ứng."""
+        return "", "failed", "KhÃ´ng Ä‘á»c Ä‘Æ°á»£c dá»¯ liá»‡u keyframe Ä‘Ã£ trÃ­ch xuáº¥t"
+    prompt = """Báº¡n Ä‘ang xem cÃ¡c keyframe Ä‘áº¡i diá»‡n Ä‘Æ°á»£c láº¥y theo timeline cá»§a má»™t video. HÃ£y chá»‰ mÃ´ táº£ nhá»¯ng gÃ¬ thá»±c sá»± quan sÃ¡t tháº¥y trong áº£nh, khÃ´ng suy Ä‘oÃ¡n lá»i thoáº¡i. PhÃ¢n tÃ­ch báº±ng tiáº¿ng Viá»‡t vÃ  táº¡o ghi chÃº thá»‹ giÃ¡c cÃ³ cáº¥u trÃºc gá»“m: (1) diá»…n biáº¿n hÃ¬nh áº£nh theo má»‘c thá»i gian; (2) nhÃ¢n váº­t/ngÆ°á»i xuáº¥t hiá»‡n vÃ  hÃ nh Ä‘á»™ng cÃ³ thá»ƒ quan sÃ¡t; (3) bá»‘i cáº£nh, váº­t thá»ƒ, sáº£n pháº©m; (4) chá»¯/overlay/logo cÃ³ thá»ƒ Ä‘á»c Ä‘Æ°á»£c; (5) phong cÃ¡ch quay, bá»‘ cá»¥c, mÃ u sáº¯c, chuyá»ƒn biáº¿n cáº£nh; (6) visual hook vÃ  yáº¿u tá»‘ giá»¯ ngÆ°á»i xem; (7) cÃ¡c chi tiáº¿t khÃ´ng cháº¯c cháº¯n pháº£i ghi rÃµ lÃ  khÃ´ng cháº¯c cháº¯n. Má»—i nháº­n xÃ©t quan trá»ng nÃªn gáº¯n timestamp cá»§a frame tÆ°Æ¡ng á»©ng."""
     candidates = [job["model"]]
     for fallback in FREE_VISION_FALLBACKS.get(job["provider"], []):
         if fallback not in candidates:
@@ -146,9 +146,9 @@ async def analyze_keyframes(job: dict, credentials: dict, keyframes: list[dict])
         try:
             summary = await run_vision(job["provider"], credentials["api_key"], credentials.get("base_url"), candidate, prompt, images)
             if summary.strip():
-                note = "Model đang chọn hỗ trợ Vision." if candidate == job["model"] else f"Model chat không nhận ảnh; tự động dùng Vision model miễn phí {candidate}."
+                note = "Model Ä‘ang chá»n há»— trá»£ Vision." if candidate == job["model"] else f"Model chat khÃ´ng nháº­n áº£nh; tá»± Ä‘á»™ng dÃ¹ng Vision model miá»…n phÃ­ {candidate}."
                 return summary.strip(), candidate, note
-            errors.append(f"{candidate}: không trả nội dung")
+            errors.append(f"{candidate}: khÃ´ng tráº£ ná»™i dung")
         except Exception as exc:
             errors.append(f"{candidate}: {_error_detail(exc)}")
     return "", "unsupported", " | ".join(errors)[:1500]
@@ -156,3 +156,4 @@ async def analyze_keyframes(job: dict, credentials: dict, keyframes: list[dict])
 
 def keyframes_json(keyframes: list[dict]) -> str:
     return json.dumps(keyframes, ensure_ascii=False)
+

@@ -12,8 +12,10 @@ from urllib.parse import urlparse
 import httpx
 from playwright.async_api import Browser, Page, Playwright, async_playwright
 
-from .config import DATA_DIR, load_config
-from .sessions import port_open, set_flow_chrome_visibility, start_flow_chrome
+from runtime_dependencies import ffmpeg_path
+
+from .config import DATA_DIR, MEDIA_DIR, load_config, project_media_root
+from .sessions import ACTIVE_PROFILE, port_open, set_flow_chrome_visibility, start_flow_chrome
 
 
 class FlowBrowserError(RuntimeError):
@@ -154,6 +156,26 @@ def model_selection_variants(model: str | None) -> list[str]:
     if "[lower priority]" in raw.lower():
         return [raw]
     return canonical_video_model_variants(raw)
+
+
+def resolution_selection_state(requested: str, summary_text: str = "", visible_texts: list[str] | None = None) -> str:
+    """Classify Flow resolution UI without inventing unsupported fallbacks.
+
+    Some Flow models expose a fixed/default resolution and therefore render no
+    resolution selector at all. In that case absence of a button is not a
+    capability mismatch. A mismatch is only proven when the UI visibly exposes
+    a different resolution.
+    """
+    wanted = str(requested or "").strip().lower()
+    observed: set[str] = set()
+    for text in [summary_text, *(visible_texts or [])]:
+        for match in re.finditer(r"\b\d{3,4}p\b", str(text or "").lower()):
+            observed.add(match.group(0))
+    if wanted and wanted in observed:
+        return "active"
+    if observed:
+        return "mismatch"
+    return "fixed_default"
 
 
 # Ordered fallback strategy for the Flow model selector (report §20):
@@ -791,10 +813,39 @@ class FlowBrowser:
             await resolution_button.first.click(force=True)
             await page.wait_for_timeout(150)
         else:
-            summary = page.locator('button[aria-label*="cài đặt"]').first
-            summary_text = (await summary.inner_text()).replace("\n", " ") if await summary.count() else ""
-            if resolution not in summary_text:
-                raise FlowBrowserError(f"Resolution {resolution} không khả dụng trên model hiện tại.")
+            # Some models expose resolution as a fixed/default value and Flow
+            # removes the selector entirely. Treat that as compatible unless
+            # the UI visibly exposes a different resolution.
+            requested_option = page.locator("button:visible").filter(
+                has_text=re.compile(rf"\b{re.escape(resolution)}\b", re.I)
+            )
+            if await requested_option.count():
+                await requested_option.first.click(force=True)
+                await page.wait_for_timeout(150)
+            else:
+                summary = page.locator('button[aria-label*="cài đặt"]').first
+                summary_text = (await summary.inner_text()).replace("\n", " ") if await summary.count() else ""
+                visible_resolution_buttons = page.locator("button:visible").filter(
+                    has_text=re.compile(r"\b\d{3,4}p\b", re.I)
+                )
+                visible_resolution_texts: list[str] = []
+                for i in range(min(await visible_resolution_buttons.count(), 20)):
+                    try:
+                        visible_resolution_texts.append(
+                            (await visible_resolution_buttons.nth(i).inner_text(timeout=1000)).strip().replace("\n", " ")
+                        )
+                    except Exception:
+                        continue
+                resolution_state = resolution_selection_state(
+                    resolution,
+                    summary_text,
+                    visible_resolution_texts,
+                )
+                if resolution_state == "mismatch":
+                    evidence = await self._selector_evidence(page)
+                    raise FlowBrowserError(
+                        f"Resolution {resolution} không khả dụng trên model hiện tại. evidence={evidence}"
+                    )
 
         await self._ensure_settings_open(page)
         duration_button = page.locator("button:visible").filter(has_text=re.compile(rf"^\s*{duration}\b"))
@@ -1026,6 +1077,7 @@ class FlowBrowser:
         job_id: str,
         project_id: str,
         prompt: str,
+        media_project_id: str | None = None,
         model: str | None = None,
         aspect_ratio: str = "16:9",
         output_count: int = 1,
@@ -1081,7 +1133,7 @@ class FlowBrowser:
                 if new_items:
                     item = new_items[0]
                     content, info = await self._download_flow_image_bytes(page, item["src"])
-                    output_dir = DATA_DIR / "flow_image_downloads" / job_id
+                    output_dir = (project_media_root(media_project_id) / "flow_image_downloads" / job_id) if media_project_id else (MEDIA_DIR / "flow_image_downloads" / job_id)
                     output_dir.mkdir(parents=True, exist_ok=True)
                     result_path = output_dir / f"result{info['suffix']}"
                     result_path.write_bytes(content)
@@ -1210,11 +1262,11 @@ class FlowBrowser:
         common = {"stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE, "text": True, "timeout": 45}
         try:
             subprocess.run(
-                ["ffmpeg", "-y", "-ss", "0.05", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(first)],
+                [ffmpeg_path(), "-y", "-ss", "0.05", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(first)],
                 check=True, **common,
             )
             subprocess.run(
-                ["ffmpeg", "-y", "-sseof", "-0.12", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(last)],
+                [ffmpeg_path(), "-y", "-sseof", "-0.12", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(last)],
                 check=True, **common,
             )
         except Exception as exc:
@@ -1277,6 +1329,7 @@ class FlowBrowser:
         job_id: str,
         project_id: str,
         prompt: str,
+        media_project_id: str | None = None,
         reference_image_paths: list[Path] | None = None,
         model: str | None = None,
         aspect_ratio: str = "16:9",
@@ -1405,7 +1458,7 @@ class FlowBrowser:
                     new_index = current_videos - 1
 
                 if new_index is not None:
-                    output_dir = DATA_DIR / "flow_downloads" / job_id
+                    output_dir = (project_media_root(media_project_id) / "flow_downloads" / job_id) if media_project_id else (MEDIA_DIR / "flow_downloads" / job_id)
                     result_path = await self._download_video_card(
                         page,
                         new_index,
@@ -1440,7 +1493,7 @@ class FlowBrowser:
     async def open_login_window(self) -> dict:
         # Never spawn a second Chrome window for login. Connect to the dedicated
         # persistent profile and bring its canonical Flow/login tab back on screen.
-        profile = DATA_DIR / "flow_chrome_profile"
+        profile = ACTIVE_PROFILE
         profile.mkdir(parents=True, exist_ok=True)
         cfg = load_config()
 

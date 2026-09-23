@@ -15,6 +15,8 @@ from .provider_store import get_provider
 from .providers.service import run_chat
 from .video_store import get_video_job, update_video_job
 from .video_proxy_store import get_video_proxy
+from runtime_dependencies import whisper_model_path
+
 from .vision_service import analyze_keyframes, extract_keyframes, keyframes_json
 
 SUPPORTED = {
@@ -123,7 +125,8 @@ def _get_whisper():
     global _whisper
     if _whisper is None:
         from faster_whisper import WhisperModel
-        _whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+        model_source = whisper_model_path(WHISPER_MODEL)
+        _whisper = WhisperModel(model_source, device="cpu", compute_type="int8")
     return _whisper
 
 

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from runtime_dependencies import ffmpeg_path, speaker_model_path
+
 from .config import DATA_DIR
 from .film_audio_schema import normalize_audio_requirements
 from .film_voice_profile_store import (
@@ -27,7 +29,7 @@ SPEAKER_MIN_SECONDS = float(os.getenv("FILM_SPEAKER_MIN_SECONDS", "0.80"))
 SPEAKER_MIN_CHUNK_SECONDS = float(os.getenv("FILM_SPEAKER_MIN_CHUNK_SECONDS", "0.65"))
 SPEAKER_SAMPLE_RATE = 16000
 SPEAKER_STRATEGY = "whisper-word-silero-vad-longest-clean-chunk"
-DEFAULT_MODEL_PATH = DATA_DIR / "models" / "speaker" / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+DEFAULT_MODEL_PATH = speaker_model_path()
 SPEAKER_MODEL_PATH = Path(os.getenv("FILM_SPEAKER_MODEL_PATH", str(DEFAULT_MODEL_PATH))).expanduser()
 
 _EXTRACTOR = None
@@ -167,7 +169,7 @@ def _get_extractor():
 def _decode_audio(video_path: Path) -> np.ndarray:
     proc = subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_path(),
             "-hide_banner",
             "-loglevel",
             "error",

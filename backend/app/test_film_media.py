@@ -3,16 +3,18 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from .config import DATA_DIR
 from .db import init_db
 from .db import connect
-from .film_media_service import apply_selection_to_pipeline, make_thumbnail, select_production_media
+from .film_media_service import apply_selection_to_pipeline, delete_project_media_files, make_thumbnail, select_production_media
 from .film_media_store import (
     get_media_by_provider_job,
     list_media_versions,
     public_media,
     register_completed_media,
+    project_media_root,
     select_media,
     validate_media_path,
 )
@@ -49,6 +51,26 @@ class FilmMediaFoundationTests(unittest.TestCase):
             validate_media_path(r"C:\Windows\System32\drivers\etc\hosts")
         with self.assertRaises(ValueError):
             validate_media_path(DATA_DIR / ".." / "film_media_store.py")
+
+    def test_legacy_data_root_allows_only_known_media_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_root = Path(tmp) / "Desktop"
+            media_root = data_root / "Media"
+            legacy_video = data_root / "flow_downloads" / "job-1" / "result.mp4"
+            database_file = data_root / "Database" / "aihub.db"
+            media_root.mkdir(parents=True)
+            legacy_video.parent.mkdir(parents=True)
+            legacy_video.write_bytes(b"video")
+            database_file.parent.mkdir(parents=True)
+            database_file.write_bytes(b"db")
+            with (
+                patch("app.film_media_store.DATA_DIR", data_root),
+                patch("app.film_media_store.MEDIA_DIR", media_root),
+                patch("app.film_media_store.LEGACY_MEDIA_DIRS", (data_root,)),
+            ):
+                self.assertEqual(validate_media_path(legacy_video), legacy_video.resolve())
+                with self.assertRaisesRegex(ValueError, "MEDIA_PATH_DENIED"):
+                    validate_media_path(database_file)
 
     def test_completed_requires_local_file(self):
         with self.assertRaises(ValueError):
@@ -191,6 +213,29 @@ class FilmMediaFoundationTests(unittest.TestCase):
         self.assertNotEqual(str(thumb_a), str(thumb_b))
         self.assertTrue(thumb_a.exists())
         self.assertTrue(thumb_b.exists())
+
+    def test_project_media_root_and_delete_are_isolated(self):
+        project_a = create_film_project('__media_isolation_a__', 'Noi dung du an A dai hon hai muoi ky tu.', 'xkiro', 'test', {})
+        project_b = create_film_project('__media_isolation_b__', 'Noi dung du an B dai hon hai muoi ky tu.', 'xkiro', 'test', {})
+        try:
+            root_a = project_media_root(project_a['id'])
+            root_b = project_media_root(project_b['id'])
+            file_a = root_a / 'flow_downloads' / 'job-a' / 'result.mp4'
+            file_b = root_b / 'flow_downloads' / 'job-b' / 'result.mp4'
+            file_a.parent.mkdir(parents=True, exist_ok=True)
+            file_b.parent.mkdir(parents=True, exist_ok=True)
+            file_a.write_bytes(b'a')
+            file_b.write_bytes(b'b')
+            self.assertNotEqual(root_a, root_b)
+            result = delete_project_media_files(project_a['id'])
+            self.assertGreaterEqual(result['removed_dirs'], 1)
+            self.assertFalse(root_a.exists())
+            self.assertTrue(file_b.exists())
+        finally:
+            delete_project_media_files(project_a['id'])
+            delete_project_media_files(project_b['id'])
+            delete_film_project(project_a['id'])
+            delete_film_project(project_b['id'])
 
     def test_selection_propagation(self):
         import uuid

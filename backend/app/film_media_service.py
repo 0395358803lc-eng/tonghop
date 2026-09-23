@@ -7,7 +7,9 @@ from pathlib import Path
 
 from PIL import Image
 
-from .config import DATA_DIR
+from runtime_dependencies import ffmpeg_path
+
+from .config import MEDIA_DIR
 from .db import connect
 from .film_media_store import (
     bind_render_job_media,
@@ -15,6 +17,8 @@ from .film_media_store import (
     get_media,
     get_media_by_provider_job,
     list_project_media,
+    media_roots,
+    project_media_root,
     public_media,
     register_completed_media,
     select_media,
@@ -83,8 +87,8 @@ def _safe_copy_thumbnail(source: Path, dest: Path) -> Path | None:
         return None
 
 
-def make_thumbnail(file_path: Path, media_type: str, preferred: Path | None = None, key: str | None = None) -> Path | None:
-    folder = DATA_DIR / 'generated_media' / 'thumbnails'
+def make_thumbnail(file_path: Path, media_type: str, preferred: Path | None = None, key: str | None = None, project_id: str | None = None) -> Path | None:
+    folder = (project_media_root(project_id) / 'thumbnails') if project_id else (MEDIA_DIR / 'generated_media' / 'thumbnails')
     folder.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(str(Path(file_path).resolve()).encode('utf-8', 'replace')).hexdigest()[:16]
     safe_key = re.sub(r'[^A-Za-z0-9._-]+', '_', str(key or ''))[:48].strip('._')
@@ -103,7 +107,7 @@ def make_thumbnail(file_path: Path, media_type: str, preferred: Path | None = No
             return None
     try:
         subprocess.run(
-            ['ffmpeg', '-y', '-ss', '0.2', '-i', str(file_path), '-frames:v', '1', '-vf', 'scale=640:-1', str(dest)],
+            [ffmpeg_path(), '-y', '-ss', '0.2', '-i', str(file_path), '-frames:v', '1', '-vf', 'scale=640:-1', str(dest)],
             check=True, capture_output=True, timeout=20,
         )
         if dest.exists() and dest.stat().st_size > 0:
@@ -117,8 +121,15 @@ def _flow_job_folder(result_url: str | None) -> Path | None:
     match = re.search(r'/api/flow/render/([0-9a-fA-F-]{36})/', result_url or '')
     if not match:
         return None
-    folder = DATA_DIR / 'flow_downloads' / match.group(1)
-    return folder if folder.exists() else None
+    job_id = match.group(1)
+    for root in media_roots():
+        folder = root / 'flow_downloads' / job_id
+        if folder.exists():
+            return folder
+        matches = list(root.glob(f'projects/*/flow_downloads/{job_id}'))
+        if matches:
+            return matches[0]
+    return None
 
 
 def resolve_video_file(job: dict) -> Path | None:
@@ -221,7 +232,7 @@ def register_canonical_from_resource(resource: dict) -> dict | None:
     probe = _probe_image(path)
     digest = metadata.get('canonical_sha256') or _sha256(path)
     provider_job_id = f"canonical:{resource['project_id']}:{resource['resource_type']}:{resource['entity_id']}:{digest[:16]}"
-    thumb = make_thumbnail(path, 'image', key=f"{resource.get('resource_type')}_{resource.get('entity_id')}_{digest[:12]}")
+    thumb = make_thumbnail(path, 'image', key=f"{resource.get('resource_type')}_{resource.get('entity_id')}_{digest[:12]}", project_id=resource['project_id'])
     record = register_completed_media(
         project_id=resource['project_id'],
         media_type='image',
@@ -266,7 +277,7 @@ def register_scene_video_from_job(job: dict, qc_result: dict | None = None) -> d
     role = 'scene_video' if passed else 'repair_candidate'
     probe = _probe_video(path)
     first_frame = resolve_first_frame(job)
-    thumb = make_thumbnail(path, 'video', first_frame, key=str(job.get('id') or job.get('scene_id') or ''))
+    thumb = make_thumbnail(path, 'video', first_frame, key=str(job.get('id') or job.get('scene_id') or ''), project_id=job['project_id'])
     provider_job_id = str(job.get('provider_job_id') or job.get('id'))
     score = qc_payload.get('consistency_score')
     if score is None:
@@ -331,6 +342,61 @@ def backfill_project_media(project_id: str) -> dict:
         except Exception:
             continue
     return {'project_id': project_id, 'upserted': len(set(created)), 'media': [public_media(item) for item in list_project_media(project_id)]}
+
+
+def delete_project_media_files(project_id: str) -> dict:
+    project_root = project_media_root(project_id)
+    removed_files = 0
+    removed_dirs = 0
+    candidates: set[Path] = set()
+
+    for media in list_project_media(project_id):
+        for key in ('file_path', 'thumbnail_path'):
+            raw = str(media.get(key) or '').strip()
+            if raw:
+                candidates.add(Path(raw))
+    for resource in list_project_resources(project_id):
+        raw = str(resource.get('local_path') or '').strip()
+        if raw:
+            candidates.add(Path(raw))
+
+    if project_root.exists():
+        shutil.rmtree(project_root, ignore_errors=True)
+        removed_dirs += 1
+
+    roots = media_roots()
+    legacy_project_dirs: set[Path] = set()
+    for raw in candidates:
+        try:
+            path = validate_media_path(raw)
+        except ValueError:
+            continue
+        if path.is_relative_to(project_root):
+            continue
+        for root in roots:
+            try:
+                rel = path.resolve().relative_to(root.resolve())
+            except ValueError:
+                continue
+            parts = rel.parts
+            if len(parts) >= 2 and parts[0] in {'film_assets', 'final_films'} and parts[1] == project_id:
+                legacy_project_dirs.add(root / parts[0] / project_id)
+            elif len(parts) >= 2 and parts[0] in {'flow_downloads', 'flow_image_downloads'}:
+                legacy_project_dirs.add(root / parts[0] / parts[1])
+            break
+        if path.exists() and path.is_file():
+            try:
+                path.unlink()
+                removed_files += 1
+            except OSError:
+                pass
+
+    for folder in sorted(legacy_project_dirs, key=lambda item: len(item.parts), reverse=True):
+        if folder.exists() and folder.is_dir():
+            shutil.rmtree(folder, ignore_errors=True)
+            removed_dirs += 1
+
+    return {'project_id': project_id, 'removed_files': removed_files, 'removed_dirs': removed_dirs}
 
 
 def list_public_media(project_id: str, **filters) -> list[dict]:

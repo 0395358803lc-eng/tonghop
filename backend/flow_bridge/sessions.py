@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -6,12 +7,13 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .config import DATA_DIR, load_config
 
-ACTIVE_PROFILE = DATA_DIR / "flow_chrome_profile"
-SESSIONS_ROOT = DATA_DIR / "flow_sessions"
-REGISTRY_PATH = DATA_DIR / "flow_sessions.json"
+ACTIVE_PROFILE = Path(os.getenv("TH_MEDIA_FLOW_PROFILE_DIR") or (DATA_DIR / "flow_chrome_profile")).resolve()
+SESSIONS_ROOT = Path(os.getenv("TH_MEDIA_FLOW_SESSIONS_DIR") or (DATA_DIR / "flow_sessions")).resolve()
+REGISTRY_PATH = Path(os.getenv("TH_MEDIA_FLOW_REGISTRY_PATH") or (DATA_DIR / "flow_sessions.json")).resolve()
 SKIP_DIRS = {
     "Crashpad", "ShaderCache", "GrShaderCache", "GraphiteDawnCache",
     "Code Cache", "GPUCache", "DawnGraphiteCache",
@@ -27,14 +29,28 @@ def _now() -> str:
 
 
 def _chrome_exe() -> Path:
-    candidates = [
-        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-    ]
-    chrome = next((path for path in candidates if path.exists()), None)
-    if chrome is None:
-        raise RuntimeError("Không tìm thấy Google Chrome trên máy.")
-    return chrome
+    """Resolve the Chromium browser used by Flow.
+
+    A user-configured executable wins. Google Chrome is preferred for backward
+    compatibility; Microsoft Edge is the clean-machine fallback because it is
+    distributed with supported Windows 10/11 installations and supports the
+    same Chromium remote-debugging flags used by the Flow bridge.
+    """
+    configured = os.getenv("TH_MEDIA_CHROME_PATH") or os.getenv("TH_MEDIA_BROWSER_PATH")
+    candidates = [Path(configured).expanduser()] if configured else []
+    for env_name in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        base = os.getenv(env_name)
+        if not base:
+            continue
+        root = Path(base)
+        candidates.extend([
+            root / "Google" / "Chrome" / "Application" / "chrome.exe",
+            root / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        ])
+    browser = next((path for path in candidates if path.is_file()), None)
+    if browser is None:
+        raise RuntimeError("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy.")
+    return browser
 
 
 def load_registry() -> dict:
@@ -100,8 +116,8 @@ def os_walk(src: Path):
 def chrome_pids(profile: Path | None = None) -> list[int]:
     needle = str(profile or ACTIVE_PROFILE).replace("'", "''")
     cmd = (
-        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
-        f"Where-Object {{ $_.CommandLine -like '*{needle}*' }} | "
+        "Get-CimInstance Win32_Process | "
+        f"Where-Object {{ $_.Name -in @('chrome.exe','msedge.exe') -and $_.CommandLine -like '*{needle}*' }} | "
         "Select-Object -ExpandProperty ProcessId"
     )
     try:
@@ -157,10 +173,22 @@ def set_flow_chrome_visibility(visible: bool) -> int:
         return 0
 
 
-def port_open(port: int = 9223) -> bool:
+def cdp_port() -> int:
+    raw = str(load_config().get("cdp_url") or "")
+    try:
+        parsed = urlparse(raw)
+        if parsed.port:
+            return int(parsed.port)
+    except ValueError:
+        pass
+    return 9223
+
+
+def port_open(port: int | None = None) -> bool:
+    target_port = int(port or cdp_port())
     with socket.socket() as sock:
         sock.settimeout(0.3)
-        return sock.connect_ex(("127.0.0.1", port)) == 0
+        return sock.connect_ex(("127.0.0.1", target_port)) == 0
 
 
 def wait_port(port: int, seconds: float, want_open: bool) -> bool:
@@ -173,9 +201,10 @@ def wait_port(port: int, seconds: float, want_open: bool) -> bool:
 
 
 def stop_flow_chrome() -> None:
+    port = cdp_port()
     for pid in chrome_pids():
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True)
-    wait_port(9223, 12, want_open=False)
+    wait_port(port, 12, want_open=False)
     lock = ACTIVE_PROFILE / "SingletonLock"
     if lock.exists():
         try:
@@ -186,13 +215,14 @@ def stop_flow_chrome() -> None:
 
 def start_flow_chrome(url: str | None = None, *, visible: bool = False) -> None:
     ACTIVE_PROFILE.mkdir(parents=True, exist_ok=True)
-    if port_open(9223):
+    port = cdp_port()
+    if port_open(port):
         set_flow_chrome_visibility(visible)
         return
 
     args = [
         str(_chrome_exe()),
-        "--remote-debugging-port=9223",
+        f"--remote-debugging-port={port}",
         f"--user-data-dir={ACTIVE_PROFILE}",
         "--restore-last-session",
         "--no-first-run",
@@ -208,8 +238,8 @@ def start_flow_chrome(url: str | None = None, *, visible: bool = False) -> None:
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
-    if not wait_port(9223, 20, want_open=True):
-        raise RuntimeError("Chrome Flow không mở lại được cổng 9223.")
+    if not wait_port(port, 20, want_open=True):
+        raise RuntimeError(f"Chrome Flow không mở lại được cổng {port}.")
     time.sleep(1.0)
     set_flow_chrome_visibility(visible)
 

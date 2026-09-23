@@ -1,5 +1,6 @@
 import type {
   Chat,
+  DesktopReadyStatus,
   FilmConsistencyReport,
   FilmGeneratedMedia,
   FilmMediaList,
@@ -39,9 +40,18 @@ import type {
   VideoProxyStatus,
   VideoProxyTest,
 } from './types'
+import { getRuntimeConfig, resolveApiUrl } from './runtime'
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, { headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) }, ...options })
+  const runtime = getRuntimeConfig()
+  const response = await fetch(resolveApiUrl(url), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(runtime.authToken ? { 'X-TH-Media-Token': runtime.authToken } : {}),
+      ...(options?.headers || {}),
+    },
+    ...options,
+  })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: response.statusText }))
     throw new Error(payload.detail || 'Yêu cầu thất bại')
@@ -50,6 +60,17 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  ready: () => request<DesktopReadyStatus>('/api/ready'),
+  desktopDiagnostics: () => request<Record<string, unknown>>('/api/desktop/diagnostics'),
+  exportDesktopDiagnostics: () => request<{ filename: string; size_bytes: number }>('/api/desktop/diagnostics/export', { method: 'POST' }),
+  desktopNetwork: () => request<{ ok: boolean; online: boolean; forced?: boolean; checked_at: string; latency_ms: number; probe?: string | null; message: string }>('/api/desktop/network'),
+  desktopResources: () => request<{ ok: boolean; can_render: boolean; warnings: string[]; blockers: string[]; cpu: { logical_cores: number; physical_cores: number; usage_percent: number }; memory: { total_gb: number; available_gb: number; used_percent: number }; storage: { media_dir: string; total_gb: number; free_gb: number; used_percent: number }; temp: { dir: string; size_gb: number; quota_gb: number }; gpus: Array<{ name: string; memory_total_mb: number; memory_free_mb: number; utilization_percent: number }> }>('/api/desktop/resources'),
+  cleanupDesktopTemp: () => request<{ ok: boolean; quota_gb: number; before_gb: number; after_gb: number; deleted_files: number; deleted_gb: number; temp_dir: string }>('/api/desktop/resources/cleanup-temp', { method: 'POST' }),
+  desktopBackups: () => request<{ ok: boolean; backups: Array<{ name: string; kind: string; created_at?: string | null; database: boolean; settings: boolean }> }>('/api/desktop/backups'),
+  createDesktopBackup: () => request<{ prepared: boolean; backup_name?: string; backup_dir?: string; database_backup?: string | null; active_pipelines?: number; reason?: string }>('/api/desktop/backups', { method: 'POST' }),
+  stageDesktopRestore: (backupName: string) => request<{ staged: boolean; backup_name?: string; marker?: string; active_pipelines?: number; reason?: string }>(`/api/desktop/backups/${encodeURIComponent(backupName)}/restore-stage`, { method: 'POST' }),
+  desktopUpdateStatus: () => request<{ ok: boolean; can_update: boolean; active_pipelines: number }>('/api/desktop/update/status'),
+  prepareDesktopUpdate: () => request<{ prepared: boolean; backup_dir: string; database_backup?: string | null }>('/api/desktop/update/prepare', { method: 'POST' }),
   flowStatus: () => request<FlowStatus>('/api/flow'),
   flowMetrics: () => request<FlowMetrics>('/api/flow/metrics'),
   saveFlow: (bridge_url: string, api_key: string, enabled = true) => request<FlowStatus>('/api/flow', {
@@ -107,7 +128,7 @@ export const api = {
   updateFilmScene: (projectId: string, sceneId: string, values: Partial<FilmScene>) => request<FilmProject>(`/api/film/projects/${projectId}/scenes/${sceneId}`, {
     method: 'PATCH', body: JSON.stringify(values),
   }),
-  deleteFilmProject: (id: string) => request<{ ok: boolean }>(`/api/film/projects/${id}`, { method: 'DELETE' }),
+  deleteFilmProject: (id: string, deleteMedia = false) => request<{ ok: boolean; delete_media: boolean; media?: { removed_files: number; removed_dirs: number } | null }>(`/api/film/projects/${id}?delete_media=${deleteMedia ? 'true' : 'false'}`, { method: 'DELETE' }),
   filmRenderStatus: (id: string) => request<FilmRenderStatus>(`/api/film/projects/${id}/render`),
   filmResources: (id: string) => request<{ provider: string; resources: FilmProviderResource[] }>(`/api/film/projects/${id}/resources`),
   syncFilmResources: (id: string) => request<{ provider: string; resources: FilmProviderResource[] }>(`/api/film/projects/${id}/resources/sync`, { method: 'POST' }),

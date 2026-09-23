@@ -1,7 +1,7 @@
 import unittest
 
 from .app import _classify_error
-from .browser import canonical_video_model_variants, classify_flow_generation_error_text, model_selection_variants
+from .browser import canonical_video_model_variants, classify_flow_generation_error_text, model_selection_variants, resolution_selection_state
 
 
 class VideoSelectorLogicTests(unittest.TestCase):
@@ -36,6 +36,15 @@ class VideoSelectorLogicTests(unittest.TestCase):
             _classify_error(RuntimeError("Không tìm thấy model Flow 'Veo X'.")),
             "CAPABILITY_MISMATCH",
         )
+
+    def test_resolution_fixed_default_is_not_false_mismatch(self):
+        self.assertEqual(resolution_selection_state("720p", "", []), "fixed_default")
+
+    def test_resolution_visible_in_summary_is_active(self):
+        self.assertEqual(resolution_selection_state("720p", "Video 720p 8s", []), "active")
+
+    def test_resolution_visible_other_value_is_mismatch(self):
+        self.assertEqual(resolution_selection_state("720p", "", ["360p"]), "mismatch")
 
     def test_policy_error_tile_is_classified_immediately(self):
         text = (

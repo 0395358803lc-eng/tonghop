@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .browser import FlowBrowserError, flow_browser, validate_downloaded_image
-from .config import DATA_DIR, load_config
+from .config import DATA_DIR, LEGACY_MEDIA_DIRS, MEDIA_DIR, load_config
 from .job_store import load_jobs, patch_job, put_job, recover_interrupted_jobs
 from . import sessions as flow_sessions
 
@@ -19,6 +19,31 @@ app = FastAPI(title="TH Media Flow Bridge", version="0.4.0")
 _jobs: dict[str, dict] = load_jobs()
 _recovered_jobs = recover_interrupted_jobs(_jobs)
 _tasks: set[asyncio.Task] = set()
+
+
+def _media_roots(subdir: str | None = None) -> tuple[Path, ...]:
+    roots = [MEDIA_DIR.resolve()]
+    for legacy in LEGACY_MEDIA_DIRS:
+        resolved = legacy.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+    if subdir:
+        return tuple((root / subdir).resolve() for root in roots)
+    return tuple(roots)
+
+
+def _is_allowed_media_path(path: Path, subdir: str) -> bool:
+    resolved = path.resolve()
+    for root in _media_roots():
+        legacy = (root / subdir).resolve()
+        if resolved.is_relative_to(legacy):
+            return True
+        projects = (root / "projects").resolve()
+        if resolved.is_relative_to(projects):
+            rel = resolved.relative_to(projects)
+            if len(rel.parts) >= 2 and rel.parts[1] == subdir:
+                return True
+    return False
 
 
 def require_bridge_key(authorization: str | None = Header(default=None)) -> None:
@@ -122,7 +147,7 @@ def _classify_error(exc: Exception) -> str:
     return "FLOW_RUNTIME_ERROR"
 
 
-def _resolve_reference_path(reference_url: str):
+def _resolve_reference_path(reference_url: str, media_project_id: str | None = None):
     match = re.search(r"/api/flow/render/([0-9a-fA-F-]{36})/(?:last-frame|first-frame)$", reference_url or "")
     if not match:
         raise RuntimeError("Chỉ chấp nhận reference frame do TH Media Flow pipeline tạo.")
@@ -131,13 +156,20 @@ def _resolve_reference_path(reference_url: str):
         uuid.UUID(job_id)
     except ValueError as exc:
         raise RuntimeError("Reference frame job ID không hợp lệ.") from exc
-    folder = DATA_DIR / "flow_downloads" / job_id
-    candidates = sorted(folder.glob("last_frame_*.jpg"))
-    if not candidates:
-        candidates = sorted(folder.glob("first_frame_*.jpg"))
-    if not candidates:
-        raise RuntimeError("Không tìm thấy reference frame local cho scene trước.")
-    return candidates[0]
+    folders: list[Path] = []
+    for root in _media_roots():
+        if media_project_id:
+            folders.append(root / "projects" / media_project_id / "flow_downloads" / job_id)
+        folders.append(root / "flow_downloads" / job_id)
+        if not media_project_id:
+            folders.extend(root.glob(f"projects/*/flow_downloads/{job_id}"))
+    for folder in folders:
+        candidates = sorted(folder.glob("last_frame_*.jpg"))
+        if not candidates:
+            candidates = sorted(folder.glob("first_frame_*.jpg"))
+        if candidates:
+            return candidates[0]
+    raise RuntimeError("Không tìm thấy reference frame local cho scene trước.")
 
 
 def _resolve_resource_reference_paths(manifest: dict) -> list[tuple[str, Path]]:
@@ -147,7 +179,6 @@ def _resolve_resource_reference_paths(manifest: dict) -> list[tuple[str, Path]]:
     if missing or manifest.get("ready") is False:
         raise RuntimeError("RESOURCE_LOCK_INCOMPLETE: " + ", ".join(str(x) for x in missing[:10]))
 
-    asset_root = (DATA_DIR / "film_assets").resolve()
     resolved: list[tuple[str, Path]] = []
     for item in manifest.get("references") or []:
         if not isinstance(item, dict):
@@ -156,10 +187,8 @@ def _resolve_resource_reference_paths(manifest: dict) -> list[tuple[str, Path]]:
         if not raw:
             continue
         path = Path(raw).resolve()
-        try:
-            path.relative_to(asset_root)
-        except ValueError as exc:
-            raise RuntimeError("REFERENCE_ERROR: Canonical asset nằm ngoài thư mục film_assets.") from exc
+        if not _is_allowed_media_path(path, "film_assets"):
+            raise RuntimeError("REFERENCE_ERROR: Canonical asset nằm ngoài các thư mục film_assets được phép.")
         if not path.exists() or not path.is_file():
             raise RuntimeError(f"REFERENCE_ERROR: Canonical asset không tồn tại: {item.get('entity_id')}")
         kind = str(item.get("resource_type") or "other")
@@ -234,6 +263,7 @@ async def _run_image_job(job_id: str, body: ImageGenerationIn) -> None:
         result = await flow_browser.generate_image(
             job_id=job_id,
             prompt=body.prompt,
+            media_project_id=body.project_id,
             timeout_seconds=600,
             **effective,
         )
@@ -270,7 +300,7 @@ async def _run_video_job(job_id: str, body: VideoGenerationIn) -> None:
         canonical = _resolve_resource_reference_paths(body.resource_manifest)
         previous_path = None
         if body.reference_image_url:
-            previous_path = _resolve_reference_path(body.reference_image_url)
+            previous_path = _resolve_reference_path(body.reference_image_url, body.project_id)
         elif body.previous_video_url:
             raise RuntimeError("Scene trước có video nhưng chưa có last-frame reference hợp lệ.")
 
@@ -300,6 +330,7 @@ async def _run_video_job(job_id: str, body: VideoGenerationIn) -> None:
         result = await flow_browser.generate_video(
             job_id=job_id,
             prompt=body.prompt,
+            media_project_id=body.project_id,
             reference_image_paths=reference_paths,
             timeout_seconds=900,
             **generate_kwargs,
@@ -351,10 +382,17 @@ async def metrics():
     for job in _jobs.values():
         key = str(job.get("status") or "unknown")
         statuses[key] = statuses.get(key, 0) + 1
-    media_root = DATA_DIR / "flow_downloads"
-    image_root = DATA_DIR / "flow_image_downloads"
-    video_files = list(media_root.glob("*/result.*")) if media_root.exists() else []
-    image_files = list(image_root.glob("*/result.*")) if image_root.exists() else []
+    video_files: list[Path] = []
+    image_files: list[Path] = []
+    for root in _media_roots():
+        media_root = root / "flow_downloads"
+        image_root = root / "flow_image_downloads"
+        if media_root.exists():
+            video_files.extend(media_root.glob("*/result.*"))
+        if image_root.exists():
+            image_files.extend(image_root.glob("*/result.*"))
+        video_files.extend(root.glob("projects/*/flow_downloads/*/result.*"))
+        image_files.extend(root.glob("projects/*/flow_image_downloads/*/result.*"))
     video_bytes = sum(path.stat().st_size for path in video_files if path.is_file())
     image_bytes = sum(path.stat().st_size for path in image_files if path.is_file())
     total_media_bytes = video_bytes + image_bytes
@@ -512,11 +550,8 @@ async def image_file(job_id: str):
     if not raw:
         raise HTTPException(409, "Flow image job chưa có file kết quả.")
     path = Path(raw)
-    root = (DATA_DIR / "flow_image_downloads").resolve()
-    try:
-        path.resolve().relative_to(root)
-    except ValueError as exc:
-        raise HTTPException(400, "Đường dẫn Flow image không hợp lệ.") from exc
+    if not _is_allowed_media_path(path, "flow_image_downloads"):
+        raise HTTPException(400, "Đường dẫn Flow image không hợp lệ.")
     if not path.exists() or not path.is_file():
         raise HTTPException(404, "File ảnh Flow không còn tồn tại.")
     try:
@@ -563,6 +598,13 @@ async def job_status(job_id: str):
     if not job:
         raise HTTPException(404, f"Không tìm thấy Flow job {job_id}.")
     return job
+
+
+@app.post("/v1/runtime/stop-chrome", dependencies=[Depends(require_bridge_key)])
+async def stop_runtime_chrome():
+    await flow_browser.close()
+    flow_sessions.stop_flow_chrome()
+    return {"ok": True}
 
 
 @app.on_event("shutdown")

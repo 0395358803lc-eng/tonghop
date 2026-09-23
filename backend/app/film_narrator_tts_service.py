@@ -10,7 +10,9 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from .config import DATA_DIR
+from runtime_dependencies import ffmpeg_path, ffprobe_path
+
+from .config import MEDIA_DIR
 from .film_audio_schema import normalize_audio_requirements
 from .film_media_store import get_selected_media, output_key_for
 from .film_qc_service import _audio_metrics, _transcribe_speech_sync
@@ -36,7 +38,7 @@ def _sha256_text(value: str) -> str:
 def _ffprobe_duration(path: Path) -> float:
     proc = subprocess.run(
         [
-            "ffprobe",
+            ffprobe_path(),
             "-v",
             "error",
             "-show_entries",
@@ -61,7 +63,7 @@ def video_stream_hash(path: str | Path) -> str:
     src = Path(path)
     proc = subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_path(),
             "-hide_banner",
             "-loglevel",
             "error",
@@ -135,7 +137,7 @@ def speech_windows_from_stt(stt: dict, total_duration: float, pad_seconds: float
 
 
 def _project_dir(project_id: str) -> Path:
-    folder = DATA_DIR / "narrator_tts" / _safe_id(project_id)
+    folder = MEDIA_DIR / "narrator_tts" / _safe_id(project_id)
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -288,7 +290,7 @@ def compose_narrator_audio(
     )
     proc = subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_path(),
             "-y",
             "-hide_banner",
             "-loglevel",
