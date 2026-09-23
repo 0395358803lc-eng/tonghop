@@ -3,6 +3,7 @@ import { Bot, CheckCircle2, ChevronDown, Clapperboard, Film, KeyRound, Loader2, 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from './api'
+import { getRuntimeConfig } from './runtime'
 import type { Chat, FlowMetrics, FlowSavedSession, FlowSessionList, FlowStatus, Message, Provider } from './types'
 import DesktopStatusCenter from './DesktopStatusCenter'
 import './App.css'
@@ -11,6 +12,10 @@ const VideoAnalyzer = lazy(() => import('./VideoAnalyzer'))
 const FilmStudio = lazy(() => import('./FilmStudio'))
 
 type DraftKeys = Record<string, { key: string; base: string }>
+
+const DEFAULT_FLOW_BRIDGE_URL = getRuntimeConfig().backendBaseUrl
+  ? ''
+  : 'http://127.0.0.1:8765'
 
 function App() {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -26,7 +31,7 @@ function App() {
   const [flowStatus, setFlowStatus] = useState<FlowStatus | null>(null)
   const [flowMetrics, setFlowMetrics] = useState<FlowMetrics | null>(null)
   const [flowAuthenticated, setFlowAuthenticated] = useState<boolean | null>(null)
-  const [flowBridgeUrl, setFlowBridgeUrl] = useState('http://127.0.0.1:8765')
+  const [flowBridgeUrl, setFlowBridgeUrl] = useState(DEFAULT_FLOW_BRIDGE_URL)
   const [flowBridgeKey, setFlowBridgeKey] = useState('')
   const [flowTesting, setFlowTesting] = useState(false)
   const [flowMessage, setFlowMessage] = useState('')
