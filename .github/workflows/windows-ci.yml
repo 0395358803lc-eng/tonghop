@@ -98,6 +98,7 @@ jobs:
       - name: Rust tests
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path 'desktop\runtime','desktop\sidecars' | Out-Null
           Set-Location desktop\src-tauri
           cargo test
           cargo check

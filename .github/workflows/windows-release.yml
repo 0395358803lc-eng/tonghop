@@ -106,6 +106,7 @@ jobs:
           Set-Location ..
           npm --prefix frontend run build
           npm --prefix frontend run lint
+          New-Item -ItemType Directory -Force -Path 'desktop\runtime','desktop\sidecars' | Out-Null
           Set-Location desktop\src-tauri
           cargo test
           cargo check
