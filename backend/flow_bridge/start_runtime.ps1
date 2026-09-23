@@ -11,46 +11,65 @@ function Wait-Port([int]$Port, [int]$Seconds = 20) {
   return $false
 }
 
+$Data = if ($env:TH_MEDIA_DATA_DIR) {
+  [Environment]::ExpandEnvironmentVariables($env:TH_MEDIA_DATA_DIR)
+} else {
+  Join-Path $Root '.data'
+}
+$Profile = if ($env:TH_MEDIA_FLOW_PROFILE_DIR) {
+  [Environment]::ExpandEnvironmentVariables($env:TH_MEDIA_FLOW_PROFILE_DIR)
+} else {
+  Join-Path $Data 'flow_chrome_profile'
+}
+$CdpUrl = if ($env:FLOW_CDP_URL) { $env:FLOW_CDP_URL } else { 'http://127.0.0.1:9223' }
+$CdpPort = ([Uri]$CdpUrl).Port
+$BridgePort = if ($env:TH_MEDIA_FLOW_BRIDGE_PORT) { [int]$env:TH_MEDIA_FLOW_BRIDGE_PORT } else { 8765 }
+$BridgeHost = if ($env:TH_MEDIA_FLOW_BRIDGE_HOST) { $env:TH_MEDIA_FLOW_BRIDGE_HOST } else { '127.0.0.1' }
+
 python backend\flow_bridge\bootstrap.py | Out-Host
 
-$cdpListener = Get-NetTCPConnection -State Listen -LocalPort 9223 -ErrorAction SilentlyContinue | Select-Object -First 1
+$cdpListener = Get-NetTCPConnection -State Listen -LocalPort $CdpPort -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($cdpListener) {
   $cdpProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($cdpListener.OwningProcess)" -ErrorAction SilentlyContinue
-  if (-not $cdpProcess -or $cdpProcess.CommandLine -notlike '*flow_chrome_profile*') {
-    throw "Port 9223 is occupied by another process. Runtime will not stop or replace it."
+  $profileMarker = [Regex]::Escape($Profile)
+  if (-not $cdpProcess -or $cdpProcess.CommandLine -notmatch $profileMarker) {
+    throw "CDP port $CdpPort is occupied by another process. Runtime will not stop or replace it."
   }
 }
 
-$bridgeListener = Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue | Select-Object -First 1
+$bridgeListener = Get-NetTCPConnection -State Listen -LocalPort $BridgePort -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($bridgeListener) {
   $bridgeProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($bridgeListener.OwningProcess)" -ErrorAction SilentlyContinue
   if (-not $bridgeProcess -or $bridgeProcess.CommandLine -notlike '*uvicorn*flow_bridge.app:app*') {
-    throw "Port 8765 is occupied by another process. Runtime will not stop or replace it."
+    throw "Flow Bridge port $BridgePort is occupied by another process. Runtime will not stop or replace it."
   }
 }
 
 if (-not $cdpListener) {
   & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'launch_chrome.ps1') | Out-Host
-  if (-not (Wait-Port 9223 20)) { throw 'Flow Chrome CDP failed to start on 127.0.0.1:9223.' }
+  if (-not (Wait-Port $CdpPort 20)) { throw "Flow Chrome CDP failed to start on 127.0.0.1:$CdpPort." }
 } else {
-  Write-Output 'Flow Chrome CDP already listening on 9223.'
+  Write-Output "Flow Chrome CDP already listening on $CdpPort."
 }
 
-if (-not (Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue)) {
+if (-not (Get-NetTCPConnection -State Listen -LocalPort $BridgePort -ErrorAction SilentlyContinue)) {
   $bridgeScript = Join-Path $PSScriptRoot 'run_bridge.ps1'
   Start-Process powershell -WindowStyle Hidden -ArgumentList @('-ExecutionPolicy','Bypass','-File',('"' + $bridgeScript + '"'))
-  if (-not (Wait-Port 8765 20)) { throw 'Flow Bridge failed to start on 127.0.0.1:8765.' }
+  if (-not (Wait-Port $BridgePort 20)) { throw "Flow Bridge failed to start on $($BridgeHost):$BridgePort." }
 } else {
-  Write-Output 'Flow Bridge already listening on 8765.'
+  Write-Output "Flow Bridge already listening on $BridgePort."
 }
 
 $healthCheck = @'
+import os
 from backend.flow_bridge.config import load_config
 import httpx
 
 cfg = load_config()
 headers = {"Authorization": "Bearer " + cfg["api_key"]}
-base = "http://127.0.0.1:8765"
+host = os.getenv("TH_MEDIA_FLOW_BRIDGE_HOST", "127.0.0.1")
+port = int(os.getenv("TH_MEDIA_FLOW_BRIDGE_PORT", "8765"))
+base = f"http://{host}:{port}"
 
 health = httpx.get(base + "/v1/health", headers=headers, timeout=10)
 health.raise_for_status()
