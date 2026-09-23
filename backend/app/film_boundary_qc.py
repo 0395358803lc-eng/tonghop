@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .config import LEGACY_MEDIA_DIRS, MEDIA_DIR
+
 JUNCTION_QC_VERSION = "junction-qc-v2"
 IDENTITY_MIN = 90.0
 PROP_MIN = 85.0
@@ -152,8 +154,16 @@ def selected_media_usable(media: dict | None, scene_id: str) -> tuple[bool, str 
 
 
 def _data_root() -> Path:
-    from .config import DATA_DIR
-    return Path(DATA_DIR).resolve()
+    return Path(MEDIA_DIR).resolve()
+
+
+def _media_roots() -> tuple[Path, ...]:
+    roots = [Path(MEDIA_DIR).resolve()]
+    for legacy in LEGACY_MEDIA_DIRS:
+        resolved = Path(legacy).resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+    return tuple(roots)
 
 
 def _readable_file(path: Path | None) -> Path | None:
@@ -213,16 +223,17 @@ def resolve_frame_path(value, *, kind: str, media: dict | None = None) -> Path |
                 return found
     job_id = str((media or {}).get("provider_job_id") or "").strip()
     if job_id:
-        folder = _data_root() / "flow_downloads" / job_id
         pattern = "last_frame_*.jpg" if kind == "last" else "first_frame_*.jpg"
-        try:
-            matches = sorted(folder.glob(pattern))
-        except Exception:
-            matches = []
-        if matches:
-            readable = _readable_file(matches[0])
-            if readable:
-                return readable
+        for root in _media_roots():
+            folder = root / "flow_downloads" / job_id
+            try:
+                matches = sorted(folder.glob(pattern))
+            except Exception:
+                matches = []
+            if matches:
+                readable = _readable_file(matches[0])
+                if readable:
+                    return readable
     return None
 
 

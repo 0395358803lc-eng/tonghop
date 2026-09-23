@@ -21,6 +21,24 @@ COPY_DIRS = [
     "video_frames",
 ]
 
+MEDIA_COPY_DIRS = {
+    "film_assets",
+    "final_films",
+    "flow_downloads",
+    "flow_image_downloads",
+    "generated_media",
+    "narrator_tts",
+    "video_frames",
+}
+
+
+def directory_target(name: str) -> Path:
+    if name in MEDIA_COPY_DIRS:
+        return Path("Media") / name
+    if name == "models":
+        return Path("Models")
+    return Path(name)
+
 RENAMED_DIRS = {
     "flow_chrome_profile": "FlowProfile",
     "flow_sessions": "FlowSessions",
@@ -118,12 +136,19 @@ def _quoted(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def rewrite_database_paths(db_path: Path, source_root: Path, target_root: Path) -> int:
+def migration_path_replacements(source_root: Path, target_root: Path) -> list[tuple[Path, Path]]:
     replacements = [
         (source_root / "flow_chrome_profile", target_root / "FlowProfile"),
         (source_root / "flow_sessions", target_root / "FlowSessions"),
-        (source_root, target_root),
     ]
+    for name in COPY_DIRS:
+        replacements.append((source_root / name, target_root / directory_target(name)))
+    replacements.append((source_root, target_root))
+    return replacements
+
+
+def rewrite_database_paths(db_path: Path, source_root: Path, target_root: Path) -> int:
+    replacements = migration_path_replacements(source_root, target_root)
     pairs: list[tuple[str, str]] = []
     for old, new in replacements:
         old_s = str(old)
@@ -172,7 +197,7 @@ def build_plan(source_root: Path) -> dict:
         source = source_root / name
         count, size = tree_stats(source)
         if source.exists():
-            entries.append({"source": name, "target": name, "files": count, "bytes": size})
+            entries.append({"source": name, "target": str(directory_target(name)).replace("\\", "/"), "files": count, "bytes": size})
             total_files += count
             total_bytes += size
 
@@ -194,6 +219,7 @@ def build_plan(source_root: Path) -> dict:
     for old_name, new_name in (
         ("aihub.db", "Database/aihub.db"),
         ("master.key", "Database/master.key"),
+        ("master.key.dpapi", "Database/master.key.dpapi"),
     ):
         source = source_root / old_name
         if source.exists():
@@ -232,8 +258,8 @@ def migrate(source_root: Path, target_root: Path, *, replace_target: bool = Fals
     target_root = target_root.resolve()
     if not (source_root / "aihub.db").exists():
         raise RuntimeError(f"Không tìm thấy aihub.db tại {source_root}")
-    if not (source_root / "master.key").exists():
-        raise RuntimeError(f"Không tìm thấy master.key tại {source_root}")
+    if not any((source_root / name).exists() for name in ("master.key", "master.key.dpapi")):
+        raise RuntimeError(f"Không tìm thấy master.key hoặc master.key.dpapi tại {source_root}")
     if target_root.exists() and any(target_root.iterdir()) and not replace_target:
         raise RuntimeError(f"Target đã có dữ liệu: {target_root}")
     stage = _stage_path(target_root)
@@ -256,19 +282,28 @@ def migrate(source_root: Path, target_root: Path, *, replace_target: bool = Fals
         db_snapshot = stage / "Backups" / "pre_path_rewrite_aihub.db"
         shutil.copy2(target_db, db_snapshot)
 
-        key_record = copy_file_verified(
-            source_root / "master.key",
-            stage / "Database" / "master.key",
-            verify_hash=True,
-        )
-        copied_files += 1
-        copied_bytes += int(key_record["bytes"])
+        key_records = {}
+        for key_name in ("master.key", "master.key.dpapi"):
+            source_key = source_root / key_name
+            if not source_key.is_file():
+                continue
+            record = copy_file_verified(
+                source_key,
+                stage / "Database" / key_name,
+                verify_hash=True,
+            )
+            key_records[key_name] = record
+            copied_files += 1
+            copied_bytes += int(record["bytes"])
+        key_record = key_records.get("master.key") or key_records.get("master.key.dpapi")
+        if not key_record:
+            raise RuntimeError("Không thể sao chép khóa mã hóa legacy.")
 
         for name in COPY_DIRS:
             source = source_root / name
             if not source.exists():
                 continue
-            count, size = copy_tree_verified(source, stage / name)
+            count, size = copy_tree_verified(source, stage / directory_target(name))
             copied_files += count
             copied_bytes += size
 
@@ -303,9 +338,8 @@ def migrate(source_root: Path, target_root: Path, *, replace_target: bool = Fals
             copied_bytes += int(record["bytes"])
 
         text_replacements = [
-            (str(source_root / "flow_chrome_profile"), str(target_root / "FlowProfile")),
-            (str(source_root / "flow_sessions"), str(target_root / "FlowSessions")),
-            (str(source_root), str(target_root)),
+            (str(old), str(new))
+            for old, new in migration_path_replacements(source_root, target_root)
         ]
         for json_path in (
             stage / "flow_bridge_jobs.json",

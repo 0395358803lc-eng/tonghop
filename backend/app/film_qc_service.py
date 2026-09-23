@@ -12,7 +12,9 @@ from pathlib import Path
 import av
 import httpx
 
-from .config import DATA_DIR
+from runtime_dependencies import ffmpeg_path
+
+from .config import LEGACY_MEDIA_DIRS, MEDIA_DIR
 from .provider_store import get_provider, list_saved
 from .film_resource_store import scene_resource_manifest
 from .film_speaker_identity import SPEAKER_REQUIRED, verify_or_enroll_scene_speaker
@@ -62,14 +64,25 @@ def get_qc_status() -> dict:
     }
 
 
+def _flow_media_roots() -> tuple[Path, ...]:
+    roots = [MEDIA_DIR.resolve()]
+    for legacy in LEGACY_MEDIA_DIRS:
+        resolved = legacy.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+    return tuple(roots)
+
+
 def _flow_video_path(result_url: str | None) -> Path | None:
     match = re.search(r"/api/flow/render/([0-9a-fA-F-]{36})/file$", result_url or "")
     if not match:
         return None
-    folder = DATA_DIR / "flow_downloads" / match.group(1)
-    for path in sorted(folder.glob("result.*")):
-        if path.suffix.lower() in {".mp4", ".mov", ".webm", ".m4v"} and path.is_file():
-            return path
+    job_id = match.group(1)
+    for root in _flow_media_roots():
+        folder = root / "flow_downloads" / job_id
+        for path in sorted(folder.glob("result.*")):
+            if path.suffix.lower() in {".mp4", ".mov", ".webm", ".m4v"} and path.is_file():
+                return path
     return None
 
 
@@ -83,7 +96,7 @@ def _audio_metrics(video_path: Path) -> dict:
         return {"present": False, "non_silent": False, "mean_volume_db": None, "max_volume_db": None}
 
     proc = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-nostats", "-i", str(video_path), "-af", "volumedetect", "-f", "null", os.devnull],
+        [ffmpeg_path(), "-hide_banner", "-nostats", "-i", str(video_path), "-af", "volumedetect", "-f", "null", os.devnull],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -253,10 +266,13 @@ def _flow_frame_path(url: str | None, kind: str) -> Path | None:
     match = re.search(r"/api/flow/render/([0-9a-fA-F-]{36})/(?:last-frame|first-frame)$", url or "")
     if not match:
         return None
-    folder = DATA_DIR / "flow_downloads" / match.group(1)
+    job_id = match.group(1)
     pattern = "first_frame_*.jpg" if kind == "first" else "last_frame_*.jpg"
-    matches = sorted(folder.glob(pattern))
-    return matches[0] if matches else None
+    for root in _flow_media_roots():
+        matches = sorted((root / "flow_downloads" / job_id).glob(pattern))
+        if matches:
+            return matches[0]
+    return None
 
 
 def _image_payload(path: Path, label: str) -> dict | None:

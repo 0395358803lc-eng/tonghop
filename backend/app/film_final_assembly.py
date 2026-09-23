@@ -6,12 +6,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .config import DATA_DIR
+from runtime_dependencies import resolve_executable
+
 from .film_acceptance_snapshot import refresh_project_staleness
 from .film_boundary_service import ensure_junctions, refresh_junction_staleness
 from .film_boundary_store import get_pair_junction
 from .film_final_store import create_final_render, get_final_render, list_final_renders, update_final_render
-from .film_media_store import get_media, get_selected_media, output_key_for, public_media, register_completed_media, validate_media_path
+from .film_media_store import get_media, get_selected_media, output_key_for, project_media_root, public_media, register_completed_media, validate_media_path
 from .film_scene_state_store import list_scene_states
 from .film_store import get_film_project
 
@@ -23,10 +24,7 @@ TARGET_AUDIO_CH = 2
 
 
 def _ffmpeg(name: str = "ffmpeg") -> str:
-    found = shutil.which(name)
-    if found:
-        return found
-    raise FileNotFoundError(f"{name} không có trên PATH.")
+    return resolve_executable(name)
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
@@ -263,7 +261,7 @@ def assemble(project_id: str) -> dict:
     row = create_final_render(project_id, status="ASSEMBLING", manifest={"gate": {"passed": True}})
     version = int(row["version"])
     try:
-        work = DATA_DIR / "final_films" / project_id / f"v{version}"
+        work = project_media_root(project_id) / "final" / f"v{version}"
         work.mkdir(parents=True, exist_ok=True)
         normalized = []
         for item in items:
@@ -275,7 +273,7 @@ def assemble(project_id: str) -> dict:
             else:
                 shutil.copy2(src, dest)
             normalized.append(dest)
-        output = DATA_DIR / "final_films" / project_id / f"final_v{version}.mp4"
+        output = project_media_root(project_id) / "final" / f"final_v{version}.mp4"
         _concat(normalized, output)
         info = _probe(output)
         manifest = build_manifest(project_id, items, version)

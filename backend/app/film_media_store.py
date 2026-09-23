@@ -3,7 +3,7 @@ import re
 import uuid
 from pathlib import Path
 
-from .config import DATA_DIR
+from .config import DATA_DIR, LEGACY_MEDIA_DIRS, MEDIA_DIR
 from .db import connect
 
 MEDIA_SCHEMA_VERSION = 1
@@ -21,7 +21,51 @@ def _loads(value, default):
 
 
 def media_root() -> Path:
-    return DATA_DIR.resolve()
+    return MEDIA_DIR.resolve()
+
+
+def project_media_root(project_id: str, root: Path | None = None) -> Path:
+    safe = str(project_id or "").strip()
+    if not safe or any(char in safe for char in ("/", "\\", ":")) or safe in {".", ".."}:
+        raise ValueError("PROJECT_MEDIA_ID_INVALID")
+    base = (root or MEDIA_DIR).resolve()
+    return base / "projects" / safe
+
+
+def media_roots() -> tuple[Path, ...]:
+    roots = [MEDIA_DIR.resolve()]
+    for legacy in LEGACY_MEDIA_DIRS:
+        resolved = legacy.resolve()
+        if resolved not in roots:
+            roots.append(resolved)
+    return tuple(roots)
+
+
+LEGACY_DATA_MEDIA_DIRS = {
+    "film_assets",
+    "flow_downloads",
+    "flow_image_downloads",
+    "generated_media",
+    "narrator_tts",
+    "final_films",
+}
+
+
+def _is_allowed_media_path(resolved: Path) -> bool:
+    current_root = MEDIA_DIR.resolve()
+    if resolved.is_relative_to(current_root):
+        return True
+
+    data_root = DATA_DIR.resolve()
+    for legacy in LEGACY_MEDIA_DIRS:
+        legacy_root = legacy.resolve()
+        if not resolved.is_relative_to(legacy_root):
+            continue
+        if legacy_root == data_root:
+            rel = resolved.relative_to(legacy_root)
+            return bool(rel.parts) and rel.parts[0] in LEGACY_DATA_MEDIA_DIRS
+        return True
+    return False
 
 
 def validate_media_path(path_value: str | Path | None) -> Path:
@@ -33,8 +77,8 @@ def validate_media_path(path_value: str | Path | None) -> Path:
     root = media_root()
     candidate = raw if raw.is_absolute() else root / raw
     resolved = candidate.resolve()
-    if not resolved.is_relative_to(root):
-        raise ValueError("MEDIA_PATH_DENIED: File nằm ngoài media root.")
+    if not _is_allowed_media_path(resolved):
+        raise ValueError("MEDIA_PATH_DENIED: File nằm ngoài các media root được phép.")
     if not resolved.is_file():
         raise ValueError("MEDIA_FILE_MISSING: File media không tồn tại trên đĩa.")
     return resolved

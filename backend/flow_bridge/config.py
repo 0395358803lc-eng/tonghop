@@ -14,6 +14,23 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 ROOT = _runtime_path("TH_MEDIA_ROOT", RUNTIME_ROOT)
 DATA_DIR = _runtime_path("TH_MEDIA_DATA_DIR", ROOT / ".data")
+MEDIA_DIR = _runtime_path("TH_MEDIA_MEDIA_DIR", DATA_DIR)
+LEGACY_MEDIA_DIRS = tuple(
+    Path(value).expanduser().resolve()
+    for value in os.getenv("TH_MEDIA_LEGACY_MEDIA_DIRS", "").split(";")
+    if value.strip()
+)
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def project_media_root(project_id: str, root: Path | None = None) -> Path:
+    safe = str(project_id or "").strip()
+    if not safe or any(char in safe for char in ("/", "\\", ":")) or safe in {".", ".."}:
+        raise ValueError("PROJECT_MEDIA_ID_INVALID")
+    base = (root or MEDIA_DIR).resolve()
+    return base / "projects" / safe
+
+
 CONFIG_PATH = _runtime_path("TH_MEDIA_FLOW_CONFIG_PATH", DATA_DIR / "flow_bridge_config.json")
 DEFAULT_CDP_URL = "http://127.0.0.1:9223"
 DEFAULT_FLOW_URL = "https://flow.google.com/"

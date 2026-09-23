@@ -10,7 +10,8 @@ from . import api
 class DesktopReadyStatusTests(unittest.TestCase):
     def test_ready_includes_desktop_runtime_and_storage_summary(self):
         with (
-            patch.dict(os.environ, {"TH_MEDIA_DESKTOP_MODE": "1"}, clear=False),
+            patch.dict(os.environ, {"TH_MEDIA_DESKTOP_MODE": "1", "TH_MEDIA_FLOW_BRIDGE_PORT": "8765"}, clear=False),
+            patch.object(api.socket, "create_connection"),
             patch.object(api, "event_store_available", return_value=True),
             patch.object(api, "get_flow_status", return_value={"configured": True}),
             patch.object(

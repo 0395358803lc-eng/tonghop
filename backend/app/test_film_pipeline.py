@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import patch
 
@@ -462,6 +463,28 @@ class PipelineControlTests(unittest.TestCase):
         stopped = stop_pipeline(pid)
         self.assertIn(stopped["run"]["status"], {"stopping", "stopped"})
         self.assertTrue(stopped["run"].get("stop_after_current") or stopped["run"]["status"] == "stopped")
+        update_run(run["id"], status="stopped")
+
+    def test_network_offline_pauses_pipeline_without_consuming_retry(self):
+        from .film_scene_state_store import create_run, update_run
+        pid = self.project["id"]
+        scene = {"id": "SCENE_OFFLINE", "scene_index": 0, "duration": 8}
+        fake = dict(self.project)
+        fake["scenes"] = [scene]
+        ensure_scene_states(pid, [scene])
+        run = create_run(pid, gate={"final_gate": True})
+        with (
+            patch("app.film_pipeline_service.get_film_project", return_value=fake),
+            patch("app.film_pipeline_service.get_qc_status", return_value={"configured": True}),
+            patch("app.film_pipeline_service.internet_status", return_value={"online": False}),
+        ):
+            status = asyncio.run(process_pipeline(pid))
+        self.assertEqual(status["run"]["status"], "paused")
+        self.assertIn("INTERNET_OFFLINE", status["run"].get("error") or "")
+        self.assertEqual(int((get_scene_state(pid, "SCENE_OFFLINE") or {}).get("attempt") or 0), 0)
+        resumed = resume_pipeline(pid)
+        self.assertEqual(resumed["run"]["status"], "running")
+        self.assertIsNone(resumed["run"].get("error"))
         update_run(run["id"], status="stopped")
 
     def test_continue_from_scene_dependency_guard(self):

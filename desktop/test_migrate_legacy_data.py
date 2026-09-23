@@ -71,14 +71,14 @@ class LegacyMigrationTests(unittest.TestCase):
             self.assertEqual(result["database_integrity"], "ok")
             self.assertTrue((target / "Database" / "aihub.db").exists())
             self.assertTrue((target / "Database" / "master.key").exists())
-            self.assertTrue((target / "generated_media" / "clip.bin").exists())
+            self.assertTrue((target / "Media" / "generated_media" / "clip.bin").exists())
             self.assertTrue((target / "FlowProfile" / "Default" / "Preferences").exists())
             self.assertFalse((target / "FlowProfile" / "lockfile").exists())
             self.assertTrue((target / "FlowSessions" / "session-a" / "Preferences").exists())
             self.assertEqual(digest(source / "aihub.db"), source_db_hash)
             self.assertEqual(digest(source / "generated_media" / "clip.bin"), source_media_hash)
             self.assertEqual(
-                digest(target / "generated_media" / "clip.bin"),
+                digest(target / "Media" / "generated_media" / "clip.bin"),
                 source_media_hash,
             )
 
@@ -90,7 +90,7 @@ class LegacyMigrationTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(
                 row[0],
-                str(target / "generated_media" / "clip.bin"),
+                str(target / "Media" / "generated_media" / "clip.bin"),
             )
             metadata = json.loads(row[1])
             self.assertEqual(metadata["profile"], str(target / "FlowProfile"))
@@ -98,7 +98,7 @@ class LegacyMigrationTests(unittest.TestCase):
             jobs = json.loads((target / "flow_bridge_jobs.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 jobs["path"],
-                str(target / "generated_media" / "clip.bin"),
+                str(target / "Media" / "generated_media" / "clip.bin"),
             )
             registry = json.loads(
                 (target / "Database" / "flow_sessions.json").read_text(encoding="utf-8")

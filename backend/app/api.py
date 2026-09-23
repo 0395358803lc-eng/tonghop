@@ -1,5 +1,6 @@
 import os
 import shutil
+import socket
 import uuid
 from pathlib import Path
 
@@ -32,6 +33,10 @@ from .desktop_shutdown import (
     request_safe_shutdown,
     shutdown_status as desktop_shutdown_status,
 )
+from .desktop_diagnostics import diagnostics_status, export_diagnostics_bundle, validate_diagnostics_filename
+from .desktop_update import create_desktop_backup, list_desktop_backups, prepare_update_backup, stage_desktop_restore, update_gate_status
+from .desktop_resources import assert_render_resources, cleanup_temp, resource_status
+from .desktop_network import internet_status
 from .film_boundary_service import check_project_junctions, check_project_junctions_async, list_project_junctions, retry_junction
 from .film_final_assembly import assemble_project, final_status
 from .film_master_qc import run_master_qc
@@ -42,11 +47,11 @@ from .film_recovery_service import detect_orphan_jobs, reconcile_project, recove
 from .film_capability_matrix import list_capability_matrix, matrix_is_fresh, refresh_capability_matrix
 from .film_canonical_service import DEFAULT_FLOW_IMAGE_MODEL, DEFAULT_IMAGE_MODEL, generate_project_canonical_assets, qc_existing_canonical_resource, qc_project_canonical_assets
 from .film_resource_store import get_project_resource, list_project_resources, lock_project_resources, save_canonical_asset, sync_project_resources, update_resource_binding
-from .config import DATA_DIR
+from .config import DATA_DIR, MEDIA_DIR
 from .flow_bridge_client import delete_flow_session, get_flow_image_capabilities, get_flow_metrics, get_flow_projects, get_flow_video_capabilities, list_flow_sessions, new_flow_session, open_flow_login, restore_flow_session, save_flow_session, test_flow_bridge
 from .flow_store import delete_flow_settings, get_flow_status, save_flow_settings
-from .film_media_store import assert_media_id, get_media, list_media_versions, public_media, validate_media_path
-from .film_media_service import list_public_media, select_production_media
+from .film_media_store import assert_media_id, get_media, list_media_versions, media_roots, public_media, validate_media_path
+from .film_media_service import delete_project_media_files, list_public_media, select_production_media
 from .schemas import ChatCreate, ChatUpdate, MessageCreate, ProviderKeyIn, VideoAnalyzeIn, VideoProxyIn, FilmProjectCreate, FilmProjectUpdate, FilmSceneUpdate, FilmRenderQueueIn, FilmPipelineStartIn, FilmCanonicalGenerateIn, FilmCanonicalQcIn, FilmResourceAssetIn, FilmResourceBindingIn, FlowBridgeSettingsIn, FlowSessionNewIn, FlowSessionSaveIn
 
 router = APIRouter(prefix="/api")
@@ -54,6 +59,72 @@ router = APIRouter(prefix="/api")
 @router.get("/health")
 def health():
     return {"ok": True, "service": "TH Media"}
+
+
+@router.get("/desktop/diagnostics")
+async def desktop_diagnostics():
+    return await diagnostics_status()
+
+
+@router.post("/desktop/diagnostics/export")
+async def desktop_diagnostics_export():
+    path = await export_diagnostics_bundle()
+    return {"filename": path.name, "size_bytes": path.stat().st_size}
+
+
+@router.get("/desktop/network")
+def desktop_network_status():
+    return internet_status()
+
+
+@router.get("/desktop/resources")
+def desktop_resources_status():
+    return resource_status()
+
+
+@router.post("/desktop/resources/cleanup-temp")
+def desktop_resources_cleanup_temp():
+    return cleanup_temp()
+
+
+@router.get("/desktop/backups")
+def desktop_backups_list():
+    return list_desktop_backups()
+
+
+@router.post("/desktop/backups")
+def desktop_backups_create():
+    return create_desktop_backup("user")
+
+
+@router.post("/desktop/backups/{backup_name}/restore-stage")
+def desktop_backup_restore_stage(backup_name: str):
+    try:
+        return stage_desktop_restore(backup_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/desktop/update/status")
+def desktop_update_status():
+    return update_gate_status()
+
+
+@router.post("/desktop/update/prepare")
+def desktop_update_prepare():
+    result = prepare_update_backup()
+    if not result.get("prepared"):
+        raise HTTPException(status_code=409, detail="Pipeline đang chạy. Không thể cập nhật lúc này.")
+    return result
+
+
+@router.get("/desktop/diagnostics/export/{filename}")
+def desktop_diagnostics_export_file(filename: str):
+    try:
+        path = validate_diagnostics_filename(filename)
+    except ValueError as exc:
+        raise HTTPException(404, "Không tìm thấy gói chẩn đoán.") from exc
+    return FileResponse(path, media_type="application/zip", filename=path.name)
 
 
 @router.get("/ready")
@@ -69,18 +140,28 @@ async def ready():
     flow = get_flow_status()
     flow_auth = False
     flow_payload = None
-    try:
-        flow_payload = await test_flow_bridge()
-        session = (flow_payload or {}).get("session") or {}
-        flow_auth = bool((flow_payload or {}).get("authenticated") or session.get("authenticated") or (flow_payload or {}).get("ok"))
-    except Exception:
-        flow_payload = None
+    flow_port = int(os.getenv("TH_MEDIA_FLOW_BRIDGE_PORT", "0") or 0)
+    flow_runtime_active = False
+    if flow_port:
+        try:
+            with socket.create_connection(("127.0.0.1", flow_port), timeout=0.08):
+                flow_runtime_active = True
+        except OSError:
+            flow_runtime_active = False
+    if flow_runtime_active:
+        try:
+            flow_payload = await test_flow_bridge()
+            session = (flow_payload or {}).get("session") or {}
+            flow_auth = bool((flow_payload or {}).get("authenticated") or session.get("authenticated") or (flow_payload or {}).get("ok"))
+        except Exception:
+            flow_payload = None
     speaker = speaker_identity_status()
     speaker_ok = bool(speaker.get("enabled") and speaker.get("model_exists"))
     checks = {
         "db": db_ok,
         "event_store": events_ok,
         "flow_configured": bool(flow.get("configured")),
+        "flow_runtime_active": flow_runtime_active,
         "flow_authenticated": flow_auth,
         "capability_matrix_fresh": matrix_is_fresh("video"),
         "speaker_verifier_ready": speaker_ok,
@@ -88,7 +169,6 @@ async def ready():
     ready_ok = bool(
         db_ok
         and events_ok
-        and flow_auth
         and (speaker_ok or not speaker.get("required"))
     )
 
@@ -130,6 +210,11 @@ async def ready():
             "active_pipelines": len(list_active_runs()),
             "configured_providers": configured_providers,
             "configured_provider_count": len(configured_providers),
+            "ports": {
+                "backend": int(os.getenv("TH_MEDIA_BACKEND_PORT", "0") or 0),
+                "flow_bridge": int(os.getenv("TH_MEDIA_FLOW_BRIDGE_PORT", "0") or 0),
+                "chrome_cdp": int(os.getenv("TH_MEDIA_CDP_PORT", "0") or 0),
+            },
         },
         "capabilities": {
             "video_models": video_models,
@@ -149,7 +234,14 @@ def _flow_render_folder(job_id: str):
         uuid.UUID(job_id)
     except ValueError as exc:
         raise HTTPException(404, "Flow render job không hợp lệ.") from exc
-    return DATA_DIR / "flow_downloads" / job_id
+    for root in media_roots():
+        legacy = root / "flow_downloads" / job_id
+        if legacy.exists():
+            return legacy
+        matches = list(root.glob(f"projects/*/flow_downloads/{job_id}"))
+        if matches:
+            return matches[0]
+    return MEDIA_DIR / "flow_downloads" / job_id
 
 
 @router.get("/flow/render/{job_id}/file")
@@ -398,9 +490,15 @@ def patch_film_project(project_id: str, body: FilmProjectUpdate):
     return project
 
 @router.delete("/film/projects/{project_id}")
-def remove_film_project(project_id: str):
+def remove_film_project(project_id: str, delete_media: bool = Query(default=False)):
+    project = get_film_project(project_id)
+    if not project:
+        raise HTTPException(404, "Không tìm thấy dự án phim")
+    media_result = None
+    if delete_media:
+        media_result = delete_project_media_files(project_id)
     delete_film_project(project_id)
-    return {"ok": True}
+    return {"ok": True, "delete_media": delete_media, "media": media_result}
 
 @router.post("/film/projects/{project_id}/analyze")
 def analyze_film_project(project_id: str, background_tasks: BackgroundTasks):
@@ -634,6 +732,7 @@ def film_render_status(project_id: str):
 @router.post("/film/projects/{project_id}/render/queue")
 def queue_film_render(project_id: str, body: FilmRenderQueueIn, background_tasks: BackgroundTasks):
     try:
+        assert_render_resources()
         jobs = enqueue_render(project_id, body.scene_ids)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
@@ -840,6 +939,7 @@ def desktop_shutdown_prepare_force():
 @router.post("/film/projects/{project_id}/pipeline/start")
 def film_pipeline_start(project_id: str, body: FilmPipelineStartIn, background_tasks: BackgroundTasks):
     try:
+        assert_render_resources()
         status = start_pipeline(project_id, from_scene_id=body.from_scene_id, scene_limit=body.scene_limit)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc

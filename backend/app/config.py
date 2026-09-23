@@ -13,8 +13,17 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
 ROOT = _runtime_path("TH_MEDIA_ROOT", RUNTIME_ROOT)
 DATA_DIR = _runtime_path("TH_MEDIA_DATA_DIR", ROOT / ".data")
+MEDIA_DIR = _runtime_path("TH_MEDIA_MEDIA_DIR", DATA_DIR)
+LEGACY_MEDIA_DIRS = tuple(
+    Path(value).expanduser().resolve()
+    for value in os.getenv("TH_MEDIA_LEGACY_MEDIA_DIRS", "").split(";")
+    if value.strip()
+)
+TEMP_DIR = _runtime_path("TH_MEDIA_TEMP_DIR", DATA_DIR / "Temp")
 DB_PATH = _runtime_path("TH_MEDIA_DB_PATH", DATA_DIR / "aihub.db")
 KEY_PATH = _runtime_path("TH_MEDIA_KEY_PATH", DATA_DIR / "master.key")
 FRONTEND_DIST = _runtime_path("TH_MEDIA_FRONTEND_DIST", ROOT / "frontend" / "dist")
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+TEMP_DIR.mkdir(parents=True, exist_ok=True)

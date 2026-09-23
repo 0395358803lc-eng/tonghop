@@ -1,11 +1,13 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { Bot, CheckCircle2, ChevronDown, Clapperboard, Film, KeyRound, Loader2, LogIn, MessageSquare, Plus, Save, Send, Settings, Sparkles, Trash2, UserPlus, X } from 'lucide-react'
+import { Bot, CheckCircle2, ChevronDown, Clapperboard, Download, Film, FolderOpen, HardDrive, KeyRound, Loader2, LogIn, MessageSquare, Monitor, Plus, Power, Save, Send, Settings, Sparkles, Trash2, UserPlus, X } from 'lucide-react'
+import { open } from '@tauri-apps/plugin-dialog'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api } from './api'
 import { getRuntimeConfig } from './runtime'
 import type { Chat, FlowMetrics, FlowSavedSession, FlowSessionList, FlowStatus, Message, Provider } from './types'
 import DesktopStatusCenter from './DesktopStatusCenter'
+import { ensureDesktopFlowRuntime, getAutostartEnabled, loadDesktopSettings, restartDesktopApp, saveDesktopSettings, setAutostartEnabled, setDesktopMediaDirectory, type DesktopSettings } from './desktopSettings'
 import './App.css'
 
 const VideoAnalyzer = lazy(() => import('./VideoAnalyzer'))
@@ -18,6 +20,7 @@ const DEFAULT_FLOW_BRIDGE_URL = getRuntimeConfig().backendBaseUrl
   : 'http://127.0.0.1:8765'
 
 function App() {
+  const desktopMode = Boolean(getRuntimeConfig().backendBaseUrl)
   const [providers, setProviders] = useState<Provider[]>([])
   const [chats, setChats] = useState<Chat[]>([])
   const [active, setActive] = useState<Chat | null>(null)
@@ -27,6 +30,15 @@ function App() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [desktopSettings, setDesktopSettings] = useState<DesktopSettings | null>(null)
+  const [desktopDraft, setDesktopDraft] = useState<DesktopSettings | null>(null)
+  const [desktopAutostart, setDesktopAutostart] = useState(false)
+  const [desktopSettingsBusy, setDesktopSettingsBusy] = useState(false)
+  const [desktopSettingsMessage, setDesktopSettingsMessage] = useState('')
+  const [desktopBackups, setDesktopBackups] = useState<Array<{ name: string; kind: string; created_at?: string | null; database: boolean; settings: boolean }>>([])
+  const [desktopRuntime, setDesktopRuntime] = useState<Awaited<ReturnType<typeof api.ready>> | null>(null)
+  const [desktopBackupBusy, setDesktopBackupBusy] = useState('')
+  const [desktopDiagnosticsBusy, setDesktopDiagnosticsBusy] = useState(false)
   const [draftKeys, setDraftKeys] = useState<DraftKeys>({})
   const [flowStatus, setFlowStatus] = useState<FlowStatus | null>(null)
   const [flowMetrics, setFlowMetrics] = useState<FlowMetrics | null>(null)
@@ -48,6 +60,10 @@ function App() {
 
   const refreshProviders = async () => setProviders(await api.providers())
   const refreshChats = async () => setChats(await api.chats())
+
+  const ensureFlowRuntime = async () => {
+    if (desktopMode) await ensureDesktopFlowRuntime()
+  }
 
   const clearFlowLoginTimer = () => {
     if (flowLoginPollRef.current !== null) {
@@ -74,16 +90,21 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!desktopMode) return
+    Promise.all([loadDesktopSettings(), getAutostartEnabled(), api.desktopBackups(), api.ready()]).then(([settings, autostart, backups, runtime]) => {
+      setDesktopSettings(settings)
+      setDesktopDraft(settings)
+      setDesktopAutostart(autostart)
+      setDesktopBackups(backups.backups || [])
+      setDesktopRuntime(runtime)
+    }).catch(e => setDesktopSettingsMessage(`Không thể đọc cài đặt Desktop: ${e.message}`))
+  }, [desktopMode])
+
+  useEffect(() => {
     api.flowStatus().then(status => {
       setFlowStatus(status)
       if (status.bridge_url) setFlowBridgeUrl(status.bridge_url)
-      if (status.configured) {
-        api.flowMetrics().then(setFlowMetrics).catch(() => undefined)
-        api.testFlow().then(result => setFlowAuthenticated(result.authenticated)).catch(() => setFlowAuthenticated(false))
-        api.flowSessions().then(applySessionList).catch(() => undefined)
-      } else {
-        setFlowAuthenticated(null)
-      }
+      setFlowAuthenticated(status.configured ? false : null)
     }).catch(() => undefined)
   }, [])
 
@@ -205,6 +226,110 @@ function App() {
     setDraftKeys(prev => ({ ...prev, [id]: { key: prev[id]?.key || '', base: prev[id]?.base || '', ...patch } }))
   }
 
+  const saveDesktopConfig = async () => {
+    if (!desktopDraft || desktopSettingsBusy) return
+    setDesktopSettingsBusy(true)
+    setDesktopSettingsMessage('')
+    try {
+      const saved = await saveDesktopSettings(desktopDraft)
+      await setAutostartEnabled(desktopAutostart)
+      setDesktopSettings(saved)
+      setDesktopDraft(saved)
+      setDesktopSettingsMessage('Đã lưu cài đặt Desktop. Chrome, temp, log và minimize-to-tray sẽ áp dụng hoàn toàn sau khi khởi động lại.')
+    } catch (e) {
+      setDesktopSettingsMessage(`Không thể lưu cài đặt Desktop: ${(e as Error).message}`)
+    } finally {
+      setDesktopSettingsBusy(false)
+    }
+  }
+
+  const chooseDesktopChrome = async () => {
+    if (!desktopDraft) return
+    const selected = await open({ multiple: false, directory: false, title: 'Chọn Google Chrome', filters: [{ name: 'Google Chrome', extensions: ['exe'] }] })
+    if (!selected || Array.isArray(selected)) return
+    setDesktopDraft({ ...desktopDraft, chrome_path: selected })
+  }
+
+  const chooseDesktopMedia = async () => {
+    if (!desktopDraft || desktopSettingsBusy) return
+    const selected = await open({ multiple: false, directory: true, title: 'Chọn thư mục Media cho TH Media' })
+    if (!selected || Array.isArray(selected)) return
+    setDesktopSettingsBusy(true)
+    try {
+      await setDesktopMediaDirectory(selected)
+      const refreshed = await loadDesktopSettings()
+      setDesktopSettings(refreshed)
+      setDesktopDraft(refreshed)
+      setDesktopSettingsMessage(`Đã đổi Media sang ${refreshed.media_dir}. Khởi động lại TH Media để toàn bộ sidecar dùng đường dẫn mới.`)
+    } catch (e) {
+      setDesktopSettingsMessage(`Không thể đổi thư mục Media: ${(e as Error).message}`)
+    } finally {
+      setDesktopSettingsBusy(false)
+    }
+  }
+
+  const restartDesktop = async () => {
+    if (desktopSettingsBusy) return
+    setDesktopSettingsMessage('TH Media đang khởi động lại...')
+    await restartDesktopApp().catch(e => setDesktopSettingsMessage(`Không thể khởi động lại: ${e.message}`))
+  }
+
+  const refreshDesktopBackups = async () => {
+    const data = await api.desktopBackups()
+    setDesktopBackups(data.backups || [])
+  }
+
+  const createDesktopBackup = async () => {
+    if (desktopBackupBusy) return
+    setDesktopBackupBusy('create')
+    setDesktopSettingsMessage('')
+    try {
+      const result = await api.createDesktopBackup()
+      if (!result.prepared) {
+        setDesktopSettingsMessage(`Không thể tạo backup khi còn ${result.active_pipelines || 0} pipeline đang chạy.`)
+      } else {
+        setDesktopSettingsMessage(`Đã tạo backup ${result.backup_name}.`)
+        await refreshDesktopBackups()
+      }
+    } catch (e) {
+      setDesktopSettingsMessage(`Tạo backup thất bại: ${(e as Error).message}`)
+    } finally {
+      setDesktopBackupBusy('')
+    }
+  }
+
+  const restoreDesktopBackup = async (backupName: string) => {
+    if (desktopBackupBusy) return
+    setDesktopBackupBusy(backupName)
+    setDesktopSettingsMessage('')
+    try {
+      const result = await api.stageDesktopRestore(backupName)
+      if (!result.staged) {
+        setDesktopSettingsMessage(`Không thể restore khi còn ${result.active_pipelines || 0} pipeline đang chạy.`)
+        return
+      }
+      setDesktopSettingsMessage(`Đã stage ${backupName}. TH Media đang khởi động lại để khôi phục database và cấu hình.`)
+      await restartDesktopApp()
+    } catch (e) {
+      setDesktopSettingsMessage(`Restore thất bại: ${(e as Error).message}`)
+      setDesktopBackupBusy('')
+    }
+  }
+
+  const exportDesktopDiagnosticsFromSettings = async () => {
+    if (desktopDiagnosticsBusy) return
+    setDesktopDiagnosticsBusy(true)
+    setDesktopSettingsMessage('')
+    try {
+      const result = await api.exportDesktopDiagnostics()
+      setDesktopSettingsMessage(`Đã tạo gói chẩn đoán ${result.filename} (${Math.round(result.size_bytes / 1024 / 1024 * 10) / 10} MB).`)
+    } catch (e) {
+      setDesktopSettingsMessage(`Xuất chẩn đoán thất bại: ${(e as Error).message}`)
+    } finally {
+      setDesktopDiagnosticsBusy(false)
+    }
+  }
+
   const saveFlowConnection = async () => {
     if (!flowBridgeKey.trim()) {
       setError('Nhập Flow Bridge API key nội bộ trước khi lưu.')
@@ -215,6 +340,7 @@ function App() {
       setFlowStatus(status)
       setFlowBridgeKey('')
       if (status.configured) {
+        await ensureFlowRuntime()
         setFlowMetrics(await api.flowMetrics())
         const result = await api.testFlow()
         setFlowAuthenticated(result.authenticated)
@@ -229,6 +355,7 @@ function App() {
     setFlowTesting(true)
     setFlowMessage('')
     try {
+      await ensureFlowRuntime()
       const result = await api.openFlowLogin()
       setFlowMessage(result.message || 'Đã mở lại Chrome Flow profile. Hoàn tất đăng nhập; ứng dụng sẽ tự phát hiện trạng thái thành công.')
       setFlowAuthenticated(false)
@@ -267,6 +394,7 @@ function App() {
     setFlowTesting(true)
     setFlowMessage('')
     try {
+      await ensureFlowRuntime()
       const result = await api.testFlow()
       setFlowAuthenticated(result.authenticated)
       setFlowMessage(result.authenticated ? 'Flow Bridge hoạt động và Chrome profile đang giữ phiên Flow.' : 'Flow cần đăng nhập lại. Bấm Đăng nhập, đăng nhập trong Chrome rồi bấm Kiểm tra.')
@@ -368,7 +496,7 @@ function App() {
         </>)}
         <DesktopStatusCenter provider={currentProvider} model={model} />
         <div className="sidebar-footer">
-          <button onClick={() => setSettingsOpen(true)}><Settings size={18} /><span>Cài đặt API</span></button>
+          <button onClick={() => setSettingsOpen(true)}><Settings size={18} /><span>Cài đặt</span></button>
           <div className="secure-note"><KeyRound size={14} /> Khóa được mã hóa phía server</div>
         </div>
       </aside>
@@ -496,7 +624,9 @@ function App() {
           </Suspense>
         ) : (
           <Suspense fallback={<div className="feature-loading"><Loader2 className="spin" size={20} /><span>Đang tải Xưởng phim AI...</span></div>}>
-            <FilmStudio providerId={providerId} model={model} provider={currentProvider} onOpenSettings={() => setSettingsOpen(true)} />
+            {desktopMode && !desktopSettings
+              ? <div className="feature-loading"><Loader2 className="spin" size={20} /><span>Đang tải cài đặt Desktop...</span></div>
+              : <FilmStudio providerId={providerId} model={model} provider={currentProvider} onOpenSettings={() => setSettingsOpen(true)} desktopSettings={desktopSettings} />}
           </Suspense>
         )}
       </main>
@@ -506,9 +636,9 @@ function App() {
           <div className="settings-modal" onMouseDown={e => e.stopPropagation()}>
             <div className="settings-head">
               <div>
-                <span className="eyebrow">KẾT NỐI</span>
-                <h2>Nhà cung cấp AI</h2>
-                <p>Khóa API được mã hóa trên server. Đăng nhập Google Flow ở thanh trên.</p>
+                <span className="eyebrow">CÀI ĐẶT</span>
+                <h2>TH Media Desktop & API</h2>
+                <p>Cấu hình ứng dụng Windows, lưu trữ, Google Flow, video mặc định và nhà cung cấp AI.</p>
               </div>
               <div className="settings-head-meta">
                 <span>{providers.filter(p => p.configured).length}/{providers.length} model</span>
@@ -517,6 +647,91 @@ function App() {
               </div>
             </div>
             <div className="settings-body">
+              {desktopMode && desktopDraft && (
+                <section className="settings-section desktop-settings-section">
+                  <div className="settings-section-title">
+                    <strong>Desktop Windows</strong>
+                    <em>Cấu hình hệ thống thật · các mục runtime sẽ áp dụng sau restart</em>
+                  </div>
+
+                  <div className="desktop-settings-block">
+                    <div className="desktop-settings-block-title"><Monitor size={14} /><b>Chung</b></div>
+                    <div className="desktop-toggle-grid">
+                      <label className="desktop-toggle"><input type="checkbox" checked={desktopAutostart} onChange={e => setDesktopAutostart(e.target.checked)} /><span><b>Khởi động cùng Windows</b><em>Đăng ký autostart bằng Tauri plugin</em></span></label>
+                      <label className="desktop-toggle"><input type="checkbox" checked={desktopDraft.minimize_to_tray} onChange={e => setDesktopDraft({ ...desktopDraft, minimize_to_tray: e.target.checked })} /><span><b>Thu nhỏ xuống system tray</b><em>Ẩn cửa sổ khi minimize</em></span></label>
+                      <label className="desktop-toggle"><input type="checkbox" checked={desktopDraft.notifications_enabled} onChange={e => setDesktopDraft({ ...desktopDraft, notifications_enabled: e.target.checked })} /><span><b>Thông báo Desktop</b><em>Pipeline, QC và Final Film</em></span></label>
+                    </div>
+                    <div className="desktop-settings-grid desktop-language-row"><label>Ngôn ngữ<select value={desktopDraft.language} disabled><option value="vi">Tiếng Việt</option></select></label></div>
+                  </div>
+
+                  <div className="desktop-settings-block">
+                    <div className="desktop-settings-block-title"><HardDrive size={14} /><b>Lưu trữ & tài nguyên</b></div>
+                    <div className="desktop-path-row"><div><span>Media root</span><code title={desktopDraft.media_dir}>{desktopDraft.media_dir}</code></div><button onClick={chooseDesktopMedia} disabled={desktopSettingsBusy}><FolderOpen size={12} /> Chọn thư mục</button></div>
+                    <div className="desktop-settings-grid three">
+                      <label>Temp quota (GB)<input type="number" min="0.5" max="500" step="0.5" value={desktopDraft.temp_quota_gb} onChange={e => setDesktopDraft({ ...desktopDraft, temp_quota_gb: Number(e.target.value) })} /></label>
+                      <label>Log tối đa/file (MB)<input type="number" min="1" max="2048" value={desktopDraft.log_max_mb} onChange={e => setDesktopDraft({ ...desktopDraft, log_max_mb: Number(e.target.value) })} /></label>
+                      <label>Số log giữ lại<input type="number" min="2" max="30" value={desktopDraft.log_keep} onChange={e => setDesktopDraft({ ...desktopDraft, log_keep: Number(e.target.value) })} /></label>
+                      <label>Số backup giữ lại<input type="number" min="1" max="30" value={desktopDraft.backup_keep} onChange={e => setDesktopDraft({ ...desktopDraft, backup_keep: Number(e.target.value) })} /></label>
+                    </div>
+                    <div className="desktop-path-meta">Database: <code>{desktopDraft.paths.database_path}</code></div>
+                  </div>
+
+                  <div className="desktop-settings-block">
+                    <div className="desktop-settings-block-title"><Power size={14} /><b>Google Flow runtime</b></div>
+                    <div className="desktop-path-row"><div><span>Google Chrome</span><code title={desktopDraft.chrome_path || 'Tự động tìm Chrome'}>{desktopDraft.chrome_path || 'Tự động tìm Chrome đã cài trên máy'}</code></div><button onClick={chooseDesktopChrome}><FolderOpen size={12} /> Chọn chrome.exe</button></div>
+                    <div className="desktop-path-meta">Flow profile: <code>{desktopDraft.paths.flow_profile_dir}</code></div>
+                    <div className="desktop-path-meta">Phiên hiện tại: <b>{flowAccount || (flowAuthenticated ? 'Đã đăng nhập' : 'Chưa đăng nhập')}</b> · {flowSessions.length} phiên đã lưu</div>
+                  </div>
+
+                  <div className="desktop-settings-block">
+                    <div className="desktop-settings-block-title"><Clapperboard size={14} /><b>Video mặc định cho dự án mới</b></div>
+                    <div className="desktop-settings-grid three">
+                      <label>Model Flow mặc định<input value={desktopDraft.default_video_model} onChange={e => setDesktopDraft({ ...desktopDraft, default_video_model: e.target.value })} placeholder="Để trống = tự động chọn" /></label>
+                      <label>Tỷ lệ<select value={desktopDraft.default_video_aspect_ratio} onChange={e => setDesktopDraft({ ...desktopDraft, default_video_aspect_ratio: e.target.value })}><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option></select></label>
+                      <label>Độ phân giải<select value={desktopDraft.default_video_resolution} onChange={e => setDesktopDraft({ ...desktopDraft, default_video_resolution: e.target.value })}><option value="720p">720p</option><option value="1080p">1080p</option><option value="Highest">Cao nhất</option></select></label>
+                    </div>
+                  </div>
+
+                  <div className="desktop-settings-block">
+                    <div className="desktop-settings-block-title"><Save size={14} /><b>Backup & Restore</b></div>
+                    <div className="desktop-backup-head">
+                      <div><span>Thư mục backup</span><code title={desktopDraft.paths.backups_dir}>{desktopDraft.paths.backups_dir}</code></div>
+                      <button onClick={createDesktopBackup} disabled={Boolean(desktopBackupBusy)}>{desktopBackupBusy === 'create' ? <Loader2 className="spin" size={12} /> : <Save size={12} />} Tạo backup ngay</button>
+                    </div>
+                    <div className="desktop-backup-list">
+                      {desktopBackups.slice(0, 5).map(backup => (
+                        <div className="desktop-backup-row" key={backup.name}>
+                          <div><b>{backup.name}</b><span>{backup.created_at ? new Date(backup.created_at).toLocaleString('vi-VN') : 'Không rõ thời gian'} · DB {backup.database ? '✓' : '✕'} · Settings {backup.settings ? '✓' : '—'}</span></div>
+                          <button disabled={Boolean(desktopBackupBusy) || !backup.database} onClick={() => restoreDesktopBackup(backup.name)}>{desktopBackupBusy === backup.name ? <Loader2 className="spin" size={11} /> : null} Khôi phục & khởi động lại</button>
+                        </div>
+                      ))}
+                      {!desktopBackups.length && <p>Chưa có backup Desktop.</p>}
+                    </div>
+                  </div>
+
+                  <div className="desktop-settings-block">
+                    <div className="desktop-settings-block-title"><Settings size={14} /><b>Nâng cao</b></div>
+                    <div className="desktop-advanced-grid">
+                      <div><span>Backend port</span><b>{desktopRuntime?.runtime?.ports?.backend || 'Tự động'}</b></div>
+                      <div><span>Flow Bridge port</span><b>{desktopRuntime?.runtime?.ports?.flow_bridge || 'Tự động'}</b></div>
+                      <div><span>Chrome CDP port</span><b>{desktopRuntime?.runtime?.ports?.chrome_cdp || 'Tự động'}</b></div>
+                    </div>
+                    <div className="desktop-path-meta">Các cổng được TH Media tự cấp trên <b>127.0.0.1</b>; người dùng không cần nhập port.</div>
+                    <div className="desktop-path-meta">Logs: <code>{desktopDraft.paths.logs_dir}</code></div>
+                    <div className="desktop-path-meta">Temp: <code>{desktopDraft.paths.temp_dir}</code></div>
+                    <div className="desktop-settings-actions">
+                      <button className="disconnect" disabled={desktopDiagnosticsBusy} onClick={exportDesktopDiagnosticsFromSettings}>{desktopDiagnosticsBusy ? <Loader2 className="spin" size={12} /> : <Download size={12} />} Xuất gói chẩn đoán</button>
+                    </div>
+                  </div>
+
+                  <div className="desktop-settings-actions">
+                    <button className="save-key" disabled={desktopSettingsBusy} onClick={saveDesktopConfig}>{desktopSettingsBusy ? <Loader2 className="spin" size={13} /> : <Save size={13} />} Lưu Desktop</button>
+                    <button className="disconnect" disabled={desktopSettingsBusy} onClick={restartDesktop}>Khởi động lại để áp dụng</button>
+                  </div>
+                  {desktopSettingsMessage && <p className="desktop-settings-message">{desktopSettingsMessage}</p>}
+                </section>
+              )}
+
               <section className="settings-section">
                 <div className="settings-section-title">
                   <strong>Model AI</strong>

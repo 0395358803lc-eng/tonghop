@@ -5,7 +5,8 @@
   "identifier": "com.thmedia.desktop",
   "build": {
     "devUrl": "http://127.0.0.1:5173",
-    "frontendDist": "../../frontend/dist"
+    "frontendDist": "../../frontend/dist",
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare_release.ps1"
   },
   "app": {
     "windows": [],
@@ -13,8 +14,32 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/0395358803lc-eng/tonghop/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzQUUxNjcyMTJFQTkyREEKUldUYWt1b1NjaGF1MDNwcWFqNE9GNml5aUt3TitLT1c5Q3JLM0ZwUGkyZ3o5QVg1N0NMaGtZSEQK",
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
+    "resources": {
+      "../sidecars/": "sidecars/",
+      "../runtime/": "runtime/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "../installer/hooks.nsh"
+      }
+    },
     "icon": [
       "icons/icon.ico",
       "icons/icon.png"

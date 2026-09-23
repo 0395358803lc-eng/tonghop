@@ -12,6 +12,14 @@ desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/sidecars/
 desktop/.build/
+desktop/.cleanroom/
+desktop/.e2e-test/
+desktop/.perf-test/
+desktop/.restart-acceptance/
+desktop/.security-test/
+desktop/.uninstall-test/
+desktop/.update-test/
+desktop/runtime/
 .vscode/
 .DS_Store
 .kilo/

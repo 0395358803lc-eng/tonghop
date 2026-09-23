@@ -1,17 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, BookOpen, CheckCircle2, Clapperboard, Download, Film, Loader2, LockKeyhole, MapPin, Pause, Play, Plus, RotateCcw, Save, Sparkles, Trash2, WandSparkles } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AlertTriangle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, ChevronUp, Clapperboard, Download, Film, Loader2, LockKeyhole, MapPin, Pause, Play, Plus, RotateCcw, Save, Sparkles, Trash2, WandSparkles } from 'lucide-react'
 import { api } from './api'
 import FilmContinuityControlCenter from './FilmContinuityControlCenter'
 import FilmMediaGallery from './FilmMediaGallery'
 import FilmSceneMedia from './FilmSceneMedia'
+import { notifyDesktop, onDesktopNotificationAction } from './desktopNotifications'
+import type { DesktopSettings } from './desktopSettings'
 import { adapterNameVi, errorCodeVi, FILM_STYLE_OPTIONS, filmStatusVi, jsonTextVi, qcStatusVi, renderStatusVi, stageVi, styleLabelVi, uiErrorVi } from './filmVi'
-import type { FilmGeneratedMedia, FilmProject, FilmProjectSummary, FilmProviderResource, FilmRenderJob, FilmRenderStatus, FilmScene, FilmSettings, FlowImageCapabilities, FlowProject, FlowVideoCapabilities, Provider } from './types'
+import type { FilmFinalStatus, FilmGeneratedMedia, FilmPipelineStatus, FilmProject, FilmProjectSummary, FilmProviderResource, FilmRenderJob, FilmRenderStatus, FilmScene, FilmSettings, FlowImageCapabilities, FlowProject, FlowVideoCapabilities, Provider } from './types'
 
 type Props = {
   providerId: string
   model: string
   provider?: Provider
   onOpenSettings: () => void
+  desktopSettings?: DesktopSettings | null
 }
 
 const DEFAULT_SETTINGS: FilmSettings = {
@@ -24,6 +27,13 @@ const DEFAULT_SETTINGS: FilmSettings = {
   auto_continuity: true,
   require_provider_assets: true,
 }
+
+const desktopFilmDefaults = (desktop?: DesktopSettings | null): FilmSettings => ({
+  ...DEFAULT_SETTINGS,
+  aspect_ratio: desktop?.default_video_aspect_ratio || DEFAULT_SETTINGS.aspect_ratio,
+  resolution: desktop?.default_video_resolution || DEFAULT_SETTINGS.resolution,
+  flow_model: desktop?.default_video_model || null,
+})
 
 const audioQcSummary = (job: FilmRenderJob) => {
   const audio = (job.qc?.audio_check || null) as Record<string, unknown> | null
@@ -62,13 +72,13 @@ const visualQcSummary = (job: FilmRenderJob) => {
   return 'Visual Lock: ' + parts.join(' · ')
 }
 
-export default function FilmStudio({ providerId, model, provider, onOpenSettings }: Props) {
+export default function FilmStudio({ providerId, model, provider, onOpenSettings, desktopSettings }: Props) {
   const [projects, setProjects] = useState<FilmProjectSummary[]>([])
   const [active, setActive] = useState<FilmProject | null>(null)
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null)
   const [story, setStory] = useState('')
   const [name, setName] = useState('')
-  const [settings, setSettings] = useState<FilmSettings>(DEFAULT_SETTINGS)
+  const [settings, setSettings] = useState<FilmSettings>(() => desktopFilmDefaults(desktopSettings))
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [projectTab, setProjectTab] = useState<'original' | 'settings' | 'story' | 'characters' | 'locations' | 'props' | 'master'>('story')
@@ -90,6 +100,17 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   const [flowAuthenticated, setFlowAuthenticated] = useState<boolean | null>(null)
   const [flowSessionHint, setFlowSessionHint] = useState('')
   const [mediaItems, setMediaItems] = useState<FilmGeneratedMedia[]>([])
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [wizardPipelineStartedProject, setWizardPipelineStartedProject] = useState<string | null>(null)
+  const [pipelineState, setPipelineState] = useState<FilmPipelineStatus | null>(null)
+  const [finalState, setFinalState] = useState<FilmFinalStatus | null>(null)
+  const [wizardBusy, setWizardBusy] = useState(false)
+  const notificationProjectRef = useRef('')
+  const notificationsReadyRef = useRef(false)
+  const lastCanonicalLockedRef = useRef(false)
+  const lastFlowAuthenticatedRef = useRef<boolean | null>(null)
+  const lastFinalApprovedRef = useRef(false)
+  const lastSceneStatusRef = useRef<Map<string, string>>(new Map())
 
   const refreshProjects = useCallback(async () => {
     setProjects(await api.filmProjects())
@@ -108,6 +129,15 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     const data = await api.filmMedia(projectId)
     setMediaItems(data.media || [])
     return data.media || []
+  }, [])
+  const refreshWizardProgress = useCallback(async (projectId: string) => {
+    const [pipeline, final] = await Promise.all([
+      api.filmPipelineStatus(projectId),
+      api.filmFinalStatus(projectId),
+    ])
+    setPipelineState(pipeline)
+    setFinalState(final)
+    return { pipeline, final }
   }, [])
 
   useEffect(() => {
@@ -149,12 +179,17 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
         ))
       }
       return true
-    } catch {
+    } catch (error) {
+      const message = (error as Error).message || ''
       setFlowAuthenticated(false)
       setFlowProjects([])
       setFlowCaps(null)
       setFlowImageCaps(null)
-      setFlowSessionHint('Không kết nối được Chrome Flow. Bấm Mở đăng nhập để khởi động lại phiên.')
+      setFlowSessionHint(
+        message.includes('Chưa kết nối Internet')
+          ? 'Chưa kết nối Internet. Dự án local vẫn sử dụng được; Flow sẽ hoạt động lại khi mạng trở lại.'
+          : 'Không kết nối được Chrome Flow. Bấm Mở đăng nhập để khởi động lại phiên.'
+      )
       return false
     } finally {
       setFlowLoading(false)
@@ -185,22 +220,40 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       try {
         const next = await api.filmProject(activeId)
         setActive(next)
-        if (next.status === 'ready' && next.scenes.length) setActiveSceneId(prev => prev || next.scenes[0].id)
+        if (next.status === 'ready' && next.scenes.length) {
+          setActiveSceneId(prev => prev || next.scenes[0].id)
+          if (desktopSettings?.notifications_enabled !== false) {
+            void notifyDesktop('TH Media · Phân tích hoàn tất', `${next.name}: ${next.scenes.length} phân cảnh đã sẵn sàng.`, { project_id: next.id })
+          }
+        }
         if (next.status === 'failed') setError(next.error || 'Phân tích dự án thất bại')
         if (['ready', 'failed'].includes(next.status)) await refreshProjects()
       } catch (e) { setError(uiErrorVi((e as Error).message)) }
     }, 1800)
     return () => window.clearInterval(timer)
-  }, [activeId, activeStatus, refreshProjects])
+  }, [activeId, activeStatus, desktopSettings?.notifications_enabled, refreshProjects])
 
   useEffect(() => {
     if (!activeId || activeStatus !== 'ready') return
     const timer = window.setTimeout(() => {
       void refreshResources(activeId)
       void refreshMedia(activeId)
+      void refreshWizardProgress(activeId)
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [activeId, activeStatus, refreshMedia, refreshResources])
+  }, [activeId, activeStatus, refreshMedia, refreshResources, refreshWizardProgress])
+
+  useEffect(() => {
+    if (!activeId || activeStatus !== 'ready') return
+    const running = pipelineState?.worker_active || ['running', 'paused', 'stopping'].includes(String(pipelineState?.run?.status || ''))
+    const finalBusy = ['ASSEMBLING', 'QC_PENDING', 'QC_RUNNING'].includes(String(finalState?.current?.status || ''))
+    if (!running && !finalBusy && wizardPipelineStartedProject !== activeId) return
+    const timer = window.setInterval(() => {
+      void refreshWizardProgress(activeId).catch(() => undefined)
+      void refreshMedia(activeId).catch(() => undefined)
+    }, 2500)
+    return () => window.clearInterval(timer)
+  }, [activeId, activeStatus, finalState?.current?.status, pipelineState?.run?.status, pipelineState?.worker_active, refreshMedia, refreshWizardProgress, wizardPipelineStartedProject])
 
   useEffect(() => {
     if (!activeId || activeStatus !== 'ready') return
@@ -262,7 +315,76 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       const gate = qc?.hard_gate as Record<string, unknown> | undefined
       return ['ready', 'locked'].includes(item.status) && gate?.passed === true
     })
+  const canonicalLocked = !visualAssetsRequired || (activeCanonicalResources.length > 0
+    && activeCanonicalResources.every(item => item.status === 'locked')
+    && canonicalReady)
   const renderGateReady = productionReady && (!visualAssetsRequired || canonicalReady)
+  const pipelineTotal = pipelineState?.counts?.total || active?.scenes.length || 0
+  const pipelineApproved = pipelineState?.counts?.approved || 0
+  const scenesApproved = pipelineTotal > 0 && pipelineApproved === pipelineTotal
+  const finalApproved = finalState?.current?.status === 'APPROVED'
+  const wizardStep = !canonicalLocked ? 3 : !productionReady ? 4 : !scenesApproved ? 5 : 6
+  const wizardSteps = [
+    { id: 1, label: 'Nhập kịch bản', done: true },
+    { id: 2, label: 'Phân tích', done: active?.status === 'ready' },
+    { id: 3, label: 'Tạo ảnh chuẩn', done: canonicalLocked },
+    { id: 4, label: 'Kiểm tra nhất quán', done: productionReady },
+    { id: 5, label: 'Tạo phim', done: scenesApproved },
+    { id: 6, label: 'Ghép & Master QC', done: finalApproved },
+  ]
+
+  useEffect(() => {
+    if (!activeId) {
+      notificationProjectRef.current = ''
+      notificationsReadyRef.current = false
+      lastSceneStatusRef.current = new Map()
+      return
+    }
+    const sceneStatuses = new Map((pipelineState?.scenes || []).map(scene => [scene.scene_id, scene.status]))
+    if (notificationProjectRef.current !== activeId) {
+      notificationProjectRef.current = activeId
+      lastCanonicalLockedRef.current = canonicalLocked
+      lastFlowAuthenticatedRef.current = flowAuthenticated
+      lastFinalApprovedRef.current = finalApproved
+      lastSceneStatusRef.current = sceneStatuses
+      const timer = window.setTimeout(() => { notificationsReadyRef.current = true }, 0)
+      return () => window.clearTimeout(timer)
+    }
+    if (!notificationsReadyRef.current) return
+    if (desktopSettings?.notifications_enabled === false) {
+      lastCanonicalLockedRef.current = canonicalLocked
+      lastFlowAuthenticatedRef.current = flowAuthenticated
+      lastFinalApprovedRef.current = finalApproved
+      lastSceneStatusRef.current = sceneStatuses
+      return
+    }
+
+    if (!lastCanonicalLockedRef.current && canonicalLocked) {
+      void notifyDesktop('TH Media · Ảnh chuẩn hoàn tất', `${active?.name || 'Dự án'}: bộ ảnh chuẩn đã QC và khóa.`, { project_id: activeId })
+    }
+    if (lastFlowAuthenticatedRef.current === true && flowAuthenticated === false) {
+      void notifyDesktop('TH Media · Google Flow cần đăng nhập lại', `${active?.name || 'Dự án'}: phiên Google Flow đã hết hoặc mất kết nối.`, { project_id: activeId, open_advanced: true })
+    }
+    if (!lastFinalApprovedRef.current && finalApproved) {
+      void notifyDesktop('TH Media · Phim đã hoàn thành', `${active?.name || 'Dự án'}: Final Film đã ghép và Master QC đạt.`, { project_id: activeId })
+    }
+
+    const previous = lastSceneStatusRef.current
+    for (const [sceneId, status] of sceneStatuses) {
+      const before = previous.get(sceneId)
+      if (!before || before === status) continue
+      if (status === 'APPROVED') {
+        void notifyDesktop('TH Media · Phân cảnh hoàn tất', `${sceneId} đã tạo xong và QC đạt.`, { project_id: activeId, scene_id: sceneId })
+      } else if (status === 'BLOCKED' || status === 'QC_FAILED' || status === 'FAILED') {
+        void notifyDesktop('TH Media · Phân cảnh cần xử lý', `${sceneId} dừng ở trạng thái ${status}.`, { project_id: activeId, scene_id: sceneId, open_advanced: true })
+      }
+    }
+
+    lastCanonicalLockedRef.current = canonicalLocked
+    lastFlowAuthenticatedRef.current = flowAuthenticated
+    lastFinalApprovedRef.current = finalApproved
+    lastSceneStatusRef.current = sceneStatuses
+  }, [active?.name, activeId, canonicalLocked, desktopSettings?.notifications_enabled, finalApproved, flowAuthenticated, pipelineState?.scenes])
 
   const latestRenderByScene = useMemo(() => {
     const map = new Map<string, NonNullable<FilmRenderStatus['jobs']>[number]>()
@@ -352,37 +474,74 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     finally { setCreating(false) }
   }
 
-  const openProject = async (id: string) => {
+  const openProject = useCallback(async (id: string) => {
     try {
       const project = await api.filmProject(id)
       setActive(project)
-      setSettings(project.settings || DEFAULT_SETTINGS)
+      setSettings(project.settings || desktopFilmDefaults(desktopSettings))
       setStory(project.original_text)
       setName(project.name)
       setActiveSceneId(project.scenes[0]?.id || null)
+      setShowAdvanced(false)
+      setWizardPipelineStartedProject(null)
+      setPipelineState(null)
+      setFinalState(null)
       if (project.status === 'ready') await refreshResources(project.id)
       setError('')
     } catch (e) { setError(uiErrorVi((e as Error).message)) }
-  }
+  }, [desktopSettings, refreshResources])
+
+  useEffect(() => {
+    let disposed = false
+    let unregister: (() => Promise<void>) | null = null
+    void onDesktopNotificationAction(async extra => {
+      const projectId = String(extra.project_id || '')
+      const sceneId = String(extra.scene_id || '')
+      if (!projectId) return
+      await openProject(projectId)
+      if (sceneId) setActiveSceneId(sceneId)
+      if (extra.open_advanced === true) setShowAdvanced(true)
+    }).then(listener => {
+      if (!listener) return
+      if (disposed) void listener.unregister()
+      else unregister = () => listener.unregister()
+    })
+    return () => {
+      disposed = true
+      if (unregister) void unregister()
+    }
+  }, [openProject])
 
   const newProject = () => {
     setActive(null)
     setActiveSceneId(null)
     setStory('')
     setName('')
-    setSettings(DEFAULT_SETTINGS)
+    setSettings(desktopFilmDefaults(desktopSettings))
     setRenderState(null)
     setResources([])
     setMediaItems([])
     setResourceBusy('')
     setSelectedForRender([])
+    setPipelineState(null)
+    setFinalState(null)
+    setWizardPipelineStartedProject(null)
+    setShowAdvanced(false)
     setError('')
   }
 
   const removeProject = async (id: string) => {
-    await api.deleteFilmProject(id)
-    if (active?.id === id) newProject()
-    await refreshProjects()
+    const project = projects.find(item => item.id === id)
+    if (!window.confirm(`Xóa dự án “${project?.name || id}”? Thao tác này sẽ xóa dữ liệu dự án khỏi TH Media.`)) return
+    const deleteMedia = window.confirm('Bạn có muốn xóa luôn toàn bộ media của dự án này không?\n\nOK = Xóa cả media\nCancel = Giữ media trên ổ đĩa')
+    try {
+      await api.deleteFilmProject(id, deleteMedia)
+      if (active?.id === id) newProject()
+      await refreshProjects()
+      setError('')
+    } catch (e) {
+      setError(uiErrorVi((e as Error).message))
+    }
   }
 
   const saveActiveSettings = async (patch: Partial<FilmSettings>) => {
@@ -658,6 +817,88 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     }
   }
 
+  const prepareWizardProductionGate = async () => {
+    if (!active) return false
+    let project = await api.checkFilmContinuity(active.id)
+    if (!project.consistency_report?.final_gate && project.consistency_report?.status === 'REPAIRABLE') {
+      project = (await api.repairFilmConsistency(project.id)).project
+    }
+    if (!project.consistency_report?.final_gate) {
+      setActive(project)
+      const first = project.consistency_report?.effective_errors?.[0] || project.consistency_report?.review_items?.[0]
+      throw new Error(first?.detail || 'Kiểm tra tính nhất quán chưa đạt. Mở Nâng cao để xem chi tiết.')
+    }
+    let gateResult = await api.runFilmProductionGate(project.id)
+    project = gateResult.project
+    if (!project.production_gate?.final_gate) {
+      project = await api.autoRepairFilm(project.id)
+      project = await api.checkFilmContinuity(project.id)
+      gateResult = await api.runFilmProductionGate(project.id)
+      project = gateResult.project
+    }
+    setActive(project)
+    if (!project.consistency_report?.final_gate || !project.production_gate?.final_gate) {
+      throw new Error('Dự án vẫn còn hạng mục cần xử lý trước khi tạo video. Mở Nâng cao để xem lỗi cụ thể.')
+    }
+    return true
+  }
+
+  const wizardContinue = async () => {
+    if (!active || wizardBusy) return
+    setWizardBusy(true)
+    setError('')
+    try {
+      if (wizardStep === 3) {
+        const missingAssets = activeCanonicalResources.some(item => !item.local_path)
+        if (missingAssets || !activeCanonicalResources.length) {
+          await generateCanonicalAssets()
+          return
+        }
+        if (!canonicalReady) {
+          await qcCanonicalAssets(undefined, undefined, true)
+          return
+        }
+        if (!canonicalLocked) {
+          await lockVisualResources()
+          return
+        }
+      }
+      if (wizardStep === 4) {
+        await prepareWizardProductionGate()
+        return
+      }
+      if (wizardStep === 5) {
+        await prepareWizardProductionGate()
+        const state = await api.startFilmPipeline(active.id)
+        setPipelineState(state)
+        setWizardPipelineStartedProject(active.id)
+        return
+      }
+      if (wizardStep === 6 && !finalApproved) {
+        const assembled = await api.assembleFilmFinal(active.id)
+        setFinalState(assembled)
+        if (assembled.current?.status === 'QC_PENDING' || assembled.current?.status === 'ASSEMBLY_COMPLETE') {
+          setFinalState(await api.runFilmMasterQc(active.id))
+        }
+      }
+    } catch (e) {
+      setError(uiErrorVi((e as Error).message))
+    } finally {
+      setWizardBusy(false)
+      await refreshWizardProgress(active.id).catch(() => undefined)
+      await refreshResources(active.id).catch(() => undefined)
+      await refreshMedia(active.id).catch(() => undefined)
+    }
+  }
+
+  const wizardActionLabel = wizardStep === 3
+    ? activeCanonicalResources.some(item => !item.local_path) || !activeCanonicalResources.length
+      ? 'Tạo ảnh chuẩn'
+      : !canonicalReady ? 'Kiểm tra ảnh chuẩn' : 'Khóa ảnh chuẩn'
+    : wizardStep === 4 ? 'Kiểm tra & sửa tự động'
+      : wizardStep === 5 ? (pipelineState?.worker_active ? 'Đang tạo phim...' : 'Bắt đầu tạo phim')
+        : finalApproved ? 'Phim đã hoàn tất' : 'Ghép phim & Master QC'
+
   const resourcePanel = (type: FilmProviderResource['resource_type'], bible: Array<Record<string, unknown>>) => {
     const rows = resources.filter(item => item.resource_type === type && item.status !== 'retired')
     const byId = new Map(rows.map(item => [item.entity_id, item]))
@@ -782,10 +1023,48 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
         <div className="film-editor-shell">
           <div className="film-editor-head">
             <div><div className="film-kicker">DỰ ÁN PHIM</div><h2>{active.name}</h2><span>{active.scenes.length} phân cảnh · {active.settings.aspect_ratio} · {active.settings.resolution === 'Highest' ? 'Cao nhất' : active.settings.resolution} · {styleLabelVi(active.settings.style)}</span></div>
-            <div className="film-head-actions"><button onClick={newProject}><Plus size={14} /> Dự án mới</button><button onClick={exportFlowPrompts}><Download size={14} /> Xuất lệnh Google Flow</button><button onClick={exportProject}><Download size={14} /> Xuất dữ liệu dự án</button></div>
+            <div className="film-head-actions">
+              <button onClick={newProject}><Plus size={14} /> Dự án mới</button>
+              <button className={showAdvanced ? 'active' : ''} onClick={() => setShowAdvanced(value => !value)}>
+                {showAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />} {showAdvanced ? 'Ẩn nâng cao' : 'Nâng cao'}
+              </button>
+            </div>
           </div>
           {error && <div className="film-error editor-error"><AlertTriangle size={14} />{error}</div>}
-          <div className="film-editor-grid">
+          <section className="film-wizard" aria-label="Quy trình tạo phim đơn giản">
+            <div className="film-wizard-steps">
+              {wizardSteps.map(step => (
+                <div key={step.id} className={`film-wizard-step ${step.done ? 'done' : step.id === wizardStep ? 'current' : ''}`}>
+                  <span>{step.done ? <CheckCircle2 size={15} /> : step.id}</span>
+                  <div><strong>Bước {step.id}</strong><em>{step.label}</em></div>
+                </div>
+              ))}
+            </div>
+            <div className="film-wizard-main">
+              <div>
+                <span className="film-wizard-kicker">BƯỚC {wizardStep}/6</span>
+                <h3>{wizardSteps.find(item => item.id === wizardStep)?.label}</h3>
+                <p>{wizardStep === 3
+                  ? canonicalGenerating ? 'AI đang tạo bộ ảnh nhân vật, bối cảnh và đạo cụ chuẩn.' : canonicalQcRunning ? 'Vision QC đang kiểm tra và tự sửa bộ ảnh chuẩn.' : canonicalReady && !canonicalLocked ? 'Ảnh chuẩn đã đạt QC. Khóa chúng trước khi tạo video.' : 'Tạo và kiểm tra bộ ảnh chuẩn để giữ nhân vật, bối cảnh và đạo cụ nhất quán.'
+                  : wizardStep === 4
+                    ? 'Hệ thống tự chạy Rule + AI, Evidence Verifier và Production Gate. Các lỗi an toàn sẽ được tự sửa.'
+                    : wizardStep === 5
+                      ? `Pipeline tạo phim tuần tự: ${pipelineApproved}/${pipelineTotal} phân cảnh đã được duyệt.`
+                      : finalApproved ? 'Final Film đã được ghép và Master QC đạt.' : 'Toàn bộ phân cảnh đã đạt. Ghép Final Film và chạy Master QC cuối cùng.'}</p>
+                <div className="film-wizard-status">
+                  <span>Ảnh chuẩn <b>{canonicalLocked ? 'ĐẠT' : 'CHƯA XONG'}</b></span>
+                  <span>Nhất quán <b>{productionReady ? 'ĐẠT' : 'CHƯA XONG'}</b></span>
+                  <span>Phân cảnh <b>{pipelineApproved}/{pipelineTotal}</b></span>
+                  <span>Final <b>{finalApproved ? 'ĐẠT' : 'CHƯA XONG'}</b></span>
+                </div>
+              </div>
+              <button className="film-wizard-next" disabled={wizardBusy || finalApproved || canonicalGenerating || canonicalQcRunning || (wizardStep === 5 && pipelineState?.worker_active)} onClick={wizardContinue}>
+                {wizardBusy || canonicalGenerating || canonicalQcRunning || (wizardStep === 5 && pipelineState?.worker_active) ? <Loader2 className="spin" size={18} /> : <ArrowRight size={18} />}
+                <span><strong>{finalApproved ? 'Hoàn tất' : 'Tiếp tục'}</strong><em>{wizardActionLabel}</em></span>
+              </button>
+            </div>
+          </section>
+          <div className={`film-editor-grid ${showAdvanced ? '' : 'film-advanced-hidden'}`}>
             <aside className="film-project-panel">
               <div className="film-panel-title"><BookOpen size={14} /><strong>DỰ ÁN</strong></div>
               <div className="film-project-tabs">
@@ -869,7 +1148,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
               </>) : <div className="film-empty-editor">Chọn một phân cảnh để chỉnh sửa.</div>}
             </section>
           </div>
-          <div className="film-render-panel">
+          <div className={`film-render-panel ${showAdvanced ? '' : 'film-advanced-hidden'}`}>
             <div className="film-render-head">
               <div><span>HỆ THỐNG TẠO VIDEO</span><strong>{renderState?.adapter.name ? adapterNameVi(renderState.adapter.name) : 'Đang kiểm tra bộ máy tạo video'}</strong><em>{renderState?.adapter.configured ? 'Bộ máy tạo video đã sẵn sàng' : 'Chưa cấu hình bộ máy tạo video'} · Kiểm tra chất lượng: {renderState?.qc_adapter.name ? adapterNameVi(renderState.qc_adapter.name) : 'đang kiểm tra'}{renderState?.resources ? ` · Canonical QC: ${renderState.resources.qc_passed || 0}/${renderState.resources.total} đạt · Khóa: ${renderState.resources.locked || 0}/${renderState.resources.total} · ${renderState.resources.qc_required || 0} cần QC` : ''}</em></div>
               <div className="film-render-controls">
@@ -1075,7 +1354,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
               {!renderState?.jobs.length && <div className="render-empty">Chưa có tác vụ tạo video. Chọn phân cảnh hoặc dùng “Tạo toàn bộ phân cảnh”.</div>}
             </div>
           </div>
-          <div className="film-bottom-actions">
+          <div className={`film-bottom-actions ${showAdvanced ? '' : 'film-advanced-hidden'}`}>
             <button onClick={async () => setActive(await api.analyzeFilmProject(active.id))}><Sparkles size={14} /> PHÂN TÍCH KỊCH BẢN</button>
             <button disabled={consistencyBusy} onClick={checkContinuity}>{consistencyBusy ? <Loader2 className="spin" size={14} /> : <AlertTriangle size={14} />} {consistencyBusy ? 'ĐANG KIỂM TRA RULE + AI' : 'KIỂM TRA TÍNH NHẤT QUÁN'}</button>
             <button disabled={consistencyBusy || !canAutoRepairConsistency} onClick={repairConsistency}><WandSparkles size={14} /> TỰ ĐỘNG SỬA LỖI NHẤT QUÁN</button>

@@ -36,6 +36,18 @@ class FlowConfigRuntimeTests(unittest.TestCase):
                 self.assertEqual(loaded["cdp_url"], "http://127.0.0.1:19444")
                 self.assertEqual(loaded["flow_url"], "https://flow.google.com/project/test")
 
+    def test_project_media_root_is_project_scoped_and_rejects_escape(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = config.project_media_root('project-a', root)
+            second = config.project_media_root('project-b', root)
+            self.assertEqual(first, root.resolve() / 'projects' / 'project-a')
+            self.assertNotEqual(first, second)
+            with self.assertRaises(ValueError):
+                config.project_media_root('../escape', root)
+            with self.assertRaises(ValueError):
+                config.project_media_root('project/a', root)
+
     def test_ensure_config_preserves_existing_values(self):
         with tempfile.TemporaryDirectory() as temp:
             cfg_path = Path(temp) / "flow_bridge_config.json"

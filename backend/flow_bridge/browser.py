@@ -12,7 +12,9 @@ from urllib.parse import urlparse
 import httpx
 from playwright.async_api import Browser, Page, Playwright, async_playwright
 
-from .config import DATA_DIR, load_config
+from runtime_dependencies import ffmpeg_path
+
+from .config import DATA_DIR, MEDIA_DIR, load_config, project_media_root
 from .sessions import ACTIVE_PROFILE, port_open, set_flow_chrome_visibility, start_flow_chrome
 
 
@@ -1026,6 +1028,7 @@ class FlowBrowser:
         job_id: str,
         project_id: str,
         prompt: str,
+        media_project_id: str | None = None,
         model: str | None = None,
         aspect_ratio: str = "16:9",
         output_count: int = 1,
@@ -1081,7 +1084,7 @@ class FlowBrowser:
                 if new_items:
                     item = new_items[0]
                     content, info = await self._download_flow_image_bytes(page, item["src"])
-                    output_dir = DATA_DIR / "flow_image_downloads" / job_id
+                    output_dir = (project_media_root(media_project_id) / "flow_image_downloads" / job_id) if media_project_id else (MEDIA_DIR / "flow_image_downloads" / job_id)
                     output_dir.mkdir(parents=True, exist_ok=True)
                     result_path = output_dir / f"result{info['suffix']}"
                     result_path.write_bytes(content)
@@ -1210,11 +1213,11 @@ class FlowBrowser:
         common = {"stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE, "text": True, "timeout": 45}
         try:
             subprocess.run(
-                ["ffmpeg", "-y", "-ss", "0.05", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(first)],
+                [ffmpeg_path(), "-y", "-ss", "0.05", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(first)],
                 check=True, **common,
             )
             subprocess.run(
-                ["ffmpeg", "-y", "-sseof", "-0.12", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(last)],
+                [ffmpeg_path(), "-y", "-sseof", "-0.12", "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(last)],
                 check=True, **common,
             )
         except Exception as exc:
@@ -1277,6 +1280,7 @@ class FlowBrowser:
         job_id: str,
         project_id: str,
         prompt: str,
+        media_project_id: str | None = None,
         reference_image_paths: list[Path] | None = None,
         model: str | None = None,
         aspect_ratio: str = "16:9",
@@ -1405,7 +1409,7 @@ class FlowBrowser:
                     new_index = current_videos - 1
 
                 if new_index is not None:
-                    output_dir = DATA_DIR / "flow_downloads" / job_id
+                    output_dir = (project_media_root(media_project_id) / "flow_downloads" / job_id) if media_project_id else (MEDIA_DIR / "flow_downloads" / job_id)
                     result_path = await self._download_video_card(
                         page,
                         new_index,

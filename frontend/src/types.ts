@@ -863,6 +863,11 @@ export type DesktopReadyStatus = {
     active_pipelines?: number
     configured_providers?: string[]
     configured_provider_count?: number
+    ports?: {
+      backend?: number
+      flow_bridge?: number
+      chrome_cdp?: number
+    }
   }
   capabilities?: {
     video_models?: string[]

@@ -6,6 +6,7 @@ import re
 import uuid
 
 from .film_acceptance_snapshot import ensure_acceptance_snapshot
+from .desktop_network import internet_status
 from .film_media_service import register_scene_video_from_job
 from .film_media_store import get_media, get_selected_media, output_key_for
 from .film_flow_errors import is_flow_dependency_error, is_terminal_render_error, render_error_code
@@ -55,6 +56,10 @@ MAX_RETRIES = max(1, min(int(os.getenv("FILM_PIPELINE_MAX_RETRIES", str(DEFAULT_
 REFERENCE_PRIORITY = ("character", "previous_last_frame", "location", "critical_prop", "secondary_prop")
 CANONICAL_RESOURCE_TYPES = frozenset({"character", "location", "prop"})
 _PIPELINE_OWNERS: dict[str, str] = {}
+
+
+class InternetOfflinePause(RuntimeError):
+    pass
 
 FLOW_PROVIDER_FICTIONAL_CONTEXT = (
     "[FICTIONAL_CHARACTER_CONTEXT]\n"
@@ -549,7 +554,7 @@ def resume_pipeline(project_id: str) -> dict:
     if not run:
         raise ValueError("Không có pipeline để resume.")
     if run.get("status") == "paused":
-        update_run(run["id"], status="running", stop_after_current=False)
+        update_run(run["id"], status="running", stop_after_current=False, error=None)
         append_run_log(run["id"], {"action": "resume"})
     return pipeline_status(project_id)
 
@@ -802,6 +807,21 @@ async def process_one_scene(project_id: str, scene: dict, run: dict) -> dict:
         try:
             completed = job if skip_render else await _execute_job(job, project, scene, built_refs)
         except Exception as exc:
+            network = await asyncio.to_thread(internet_status, force=True)
+            if not network.get("online"):
+                message = "INTERNET_OFFLINE: Chưa kết nối Internet. Pipeline đã tạm dừng và sẽ không tiêu retry."
+                update_render_job(job["id"], status="waiting", error=message, provider_error_code="INTERNET_OFFLINE")
+                upsert_scene_state(
+                    project_id,
+                    scene_id,
+                    scene_index,
+                    status="QUEUED",
+                    attempt=attempt,
+                    current_job_id=job["id"],
+                    error=None,
+                    blocked_reason=None,
+                )
+                raise InternetOfflinePause(message) from exc
             message = str(exc)[:2000]
             if is_terminal_render_error(message):
                 code = render_error_code(message)
@@ -984,10 +1004,27 @@ async def process_pipeline(project_id: str) -> dict:
                 append_run_log(run["id"], {"action": "completed"})
                 return pipeline_status(project_id)
             heartbeat_execution_lease(project_id, worker_id, run_id=run.get("id"), scene_id=scene.get("id"))
+            network = await asyncio.to_thread(internet_status)
+            if not network.get("online"):
+                message = "INTERNET_OFFLINE: Chưa kết nối Internet. Pipeline đã tạm dừng trước khi render scene tiếp theo."
+                update_run(run["id"], status="paused", error=message, current_scene_id=scene.get("id"), current_scene_index=scene.get("scene_index"))
+                append_run_log(run["id"], {"action": "network_paused", "scene_id": scene.get("id"), "error": message})
+                return pipeline_status(project_id)
             try:
                 await process_one_scene(project_id, scene, run)
-            except Exception as exc:
+            except InternetOfflinePause as exc:
                 message = str(exc)[:2000]
+                update_run(run["id"], status="paused", error=message, current_scene_id=scene.get("id"), current_scene_index=scene.get("scene_index"))
+                append_run_log(run["id"], {"action": "network_paused", "scene_id": scene.get("id"), "error": message})
+                return pipeline_status(project_id)
+            except Exception as exc:
+                network = await asyncio.to_thread(internet_status, force=True)
+                message = str(exc)[:2000]
+                if not network.get("online"):
+                    offline_message = "INTERNET_OFFLINE: Chưa kết nối Internet. Pipeline đã tạm dừng; dữ liệu hiện tại được giữ nguyên."
+                    update_run(run["id"], status="paused", error=offline_message, current_scene_id=scene.get("id"), current_scene_index=scene.get("scene_index"))
+                    append_run_log(run["id"], {"action": "network_paused", "scene_id": scene.get("id"), "error": offline_message})
+                    return pipeline_status(project_id)
                 append_run_log(run["id"], {"action": "scene_failed", "scene_id": scene.get("id"), "error": message})
                 update_run(run["id"], status="failed", error=message)
                 return pipeline_status(project_id)

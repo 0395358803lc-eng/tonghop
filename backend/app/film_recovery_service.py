@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,7 @@ from .film_scene_state_store import (
     execution_lease_active,
     get_active_run,
     get_execution_lease,
+    list_active_runs,
     get_scene_state,
     list_scene_states,
     release_execution_lease,
@@ -21,6 +23,8 @@ from .film_scene_state_store import (
 
 ORPHAN_AFTER = timedelta(minutes=3)
 IDEMPOTENCY_TTL = timedelta(seconds=20)
+RECOVERY_SCAN_SECONDS = 5.0
+_RECOVERY_WORKERS: set[asyncio.Task] = set()
 
 
 def _now() -> datetime:
@@ -149,6 +153,44 @@ def reconcile_all() -> list[dict]:
         extra = conn.execute("SELECT DISTINCT project_id FROM film_pipeline_runs WHERE status IN ('running','paused','stopping')").fetchall()
     ids = {row["project_id"] for row in list(rows) + list(extra)}
     return [reconcile_project(pid) for pid in sorted(ids)]
+
+
+async def recover_interrupted_pipelines_once() -> dict:
+    from .film_pipeline_service import pipeline_worker_active, process_pipeline
+
+    scheduled: list[str] = []
+    deferred: list[dict] = []
+    reports: list[dict] = []
+    for run in list_active_runs():
+        project_id = str(run.get("project_id") or "").strip()
+        status = str(run.get("status") or "")
+        if not project_id or status not in {"running", "stopping"}:
+            continue
+        if pipeline_worker_active(project_id) or execution_lease_active(project_id):
+            deferred.append({"project_id": project_id, "reason": "active_worker_or_lease"})
+            continue
+        report = reconcile_project(project_id)
+        reports.append(report)
+        if pipeline_worker_active(project_id) or execution_lease_active(project_id):
+            deferred.append({"project_id": project_id, "reason": "lease_preserved_after_reconcile"})
+            continue
+        task = asyncio.create_task(process_pipeline(project_id), name=f"film-recovery-{project_id}")
+        _RECOVERY_WORKERS.add(task)
+        task.add_done_callback(_RECOVERY_WORKERS.discard)
+        scheduled.append(project_id)
+        emit_event(project_id, "RECOVERY_WORKER_SCHEDULED", run_id=run.get("id"), payload={"status": status})
+    return {"scheduled": scheduled, "deferred": deferred, "reports": reports}
+
+
+async def startup_recovery_supervisor(scan_seconds: float = RECOVERY_SCAN_SECONDS) -> None:
+    while True:
+        try:
+            await recover_interrupted_pipelines_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        await asyncio.sleep(max(1.0, float(scan_seconds)))
 
 
 def begin_idempotent(project_id: str, operation: str, fingerprint: str = "") -> dict:
