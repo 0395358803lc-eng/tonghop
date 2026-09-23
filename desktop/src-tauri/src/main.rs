@@ -3,7 +3,7 @@
 use std::{
     env,
     fs::{self, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -153,6 +153,42 @@ fn stop_children(children: &Arc<Mutex<Vec<Child>>>) {
     }
 }
 
+fn read_http_response(stream: TcpStream) -> io::Result<(u16, Vec<u8>)> {
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line)?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP status line"))?;
+
+    let mut content_length = None::<usize>;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse::<usize>().ok();
+            }
+        }
+    }
+
+    let mut body = Vec::new();
+    if let Some(length) = content_length {
+        body.resize(length, 0);
+        reader.read_exact(&mut body)?;
+    } else {
+        reader.read_to_end(&mut body)?;
+    }
+    Ok((status, body))
+}
+
 fn stop_flow_chrome(control: &Arc<Mutex<Option<(u16, String)>>>) {
     let value = control.lock().ok().and_then(|guard| guard.clone());
     let Some((port, key)) = value else {
@@ -163,13 +199,12 @@ fn stop_flow_chrome(control: &Arc<Mutex<Option<(u16, String)>>>) {
     let Ok(mut stream) = TcpStream::connect(address) else {
         return;
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let request = format!(
         "POST /v1/runtime/stop-chrome HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {key}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
     if stream.write_all(request.as_bytes()).is_ok() {
-        let mut response = String::new();
-        let _ = stream.read_to_string(&mut response);
+        let _ = read_http_response(stream);
     }
 }
 
@@ -180,21 +215,16 @@ fn backend_json(
 ) -> Option<serde_json::Value> {
     let (port, token) = control.lock().ok().and_then(|guard| guard.clone())?;
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-TH-Media-Token: {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).ok()?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response).ok()?;
-    let mut parts = response.splitn(2, "\r\n\r\n");
-    let headers = parts.next()?;
-    let body = parts.next().unwrap_or("");
-    let status_line = headers.lines().next().unwrap_or("");
-    if !status_line.contains(" 200 ") {
+    let (status, body) = read_http_response(stream).ok()?;
+    if status != 200 {
         return None;
     }
-    serde_json::from_str(body).ok()
+    serde_json::from_slice(&body).ok()
 }
 
 #[cfg(windows)]
