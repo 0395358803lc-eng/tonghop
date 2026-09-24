@@ -597,6 +597,30 @@ fn open_media_folder() {
     let _ = command.spawn();
 }
 
+fn valid_project_id(value: &str) -> bool {
+    let safe = value.trim();
+    !safe.is_empty()
+        && safe.len() <= 128
+        && safe.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+#[tauri::command]
+fn open_project_canonical_folder(project_id: String) -> Result<String, String> {
+    let safe = project_id.trim();
+    if !valid_project_id(safe) {
+        return Err("Project ID không hợp lệ.".to_string());
+    }
+    let root = local_app_root().map_err(|err| err.to_string())?;
+    let path = root.join("film_assets").join(safe);
+    fs::create_dir_all(&path).map_err(|err| format!("Không thể tạo thư mục ảnh chuẩn: {err}"))?;
+    let mut command = Command::new("explorer.exe");
+    command.arg(&path);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.spawn().map_err(|err| format!("Không thể mở File Explorer: {err}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn set_media_directory(path: String) -> Result<String, String> {
     let root = local_app_root().map_err(|err| err.to_string())?;
@@ -1008,6 +1032,10 @@ fn boot_runtime() -> io::Result<RuntimeBoot> {
         ("TH_MEDIA_BACKEND_HOST", "127.0.0.1".to_string()),
         ("TH_MEDIA_BACKEND_PORT", backend_port.to_string()),
         ("TH_MEDIA_DESKTOP_MODE", "1".to_string()),
+        (
+            "TH_MEDIA_DEV_SERVER",
+            if cfg!(debug_assertions) { "1" } else { "0" }.to_string(),
+        ),
         ("TH_MEDIA_TEMP_QUOTA_GB", temp_quota_s),
         ("TH_MEDIA_FLOW_BRIDGE_PORT", flow_port.to_string()),
         ("TH_MEDIA_CDP_PORT", cdp_port.to_string()),
@@ -1067,7 +1095,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
-        .invoke_handler(tauri::generate_handler![ensure_flow_runtime, get_desktop_settings, save_desktop_settings, set_media_directory, restart_th_media])
+        .invoke_handler(tauri::generate_handler![ensure_flow_runtime, get_desktop_settings, save_desktop_settings, set_media_directory, open_project_canonical_folder, restart_th_media])
         .setup(move |app| {
             if let Ok(resource_dir) = app.path().resource_dir() {
                 let bundled_sidecars = resource_dir.join("sidecars");
@@ -1414,6 +1442,16 @@ mod tests {
         assert!(!dir.join("pending-restore.json").exists());
         assert!(!apply_pending_restore(&dir).unwrap());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn project_id_validation_blocks_path_traversal() {
+        assert!(valid_project_id("273b8bf6-469e-45f5-994f-53598b126c9b"));
+        assert!(valid_project_id("PROJECT_001"));
+        assert!(!valid_project_id(""));
+        assert!(!valid_project_id("../film_assets"));
+        assert!(!valid_project_id("a/b"));
+        assert!(!valid_project_id("project id"));
     }
 
     #[test]
