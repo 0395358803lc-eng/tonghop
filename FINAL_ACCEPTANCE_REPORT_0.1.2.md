@@ -195,4 +195,46 @@ The term 'ffmpeg' is not recognized ...
 | Update 0.1.0 → 0.1.2 | NOT RUN | Hết chặn dụng cụ (helper đã dựng lại), cần artifact 0.1.2 từ Release và một Flow session đã đăng nhập. |
 | Restart acceptance | NOT RUN | Như trên, cần chạy lại bằng helper mới. |
 
-Không tự gọi đây là bản production hoàn chỉnh cho tới khi các dòng trên có bằng chứng runtime.
+## Ma trận 20 mục của master checklist
+
+| # | Mục | Trạng thái | Bằng chứng / khoảng trống |
+| --- | --- | --- | --- |
+| 1 | Desktop đóng gói | PASS | exe + frontend + NSIS build OK; version 0.1.2 đồng nhất `tauri.conf.json`/`package.json`/`Cargo.toml`/`Cargo.lock`; `test_portable_paths` xanh nên không còn đường dẫn máy dev |
+| 2 | Backend self-contained | PASS | `python3.dll`+`vcruntime140.dll` có; chạy với python/node/npm vô hình; **import audit 11/0 fail trên bản đã cài**; PoT provider đã sửa (mục "Phát hiện packaging mới") |
+| 3 | Flow Bridge self-contained | PASS | Playwright driver + PIL + httpx có; **import audit 5/0 fail**; sidecar tự boot từ thư mục cài, port 62164 |
+| 4 | Browser cho Flow | PASS | Chrome → Edge → Chromium bundle; 4 scenario có test; `BUNDLED_CHROME=149.0.7827.55 415,4MB` trong Setup; test máy sạch chưa có browser vẫn NOT_RUN |
+| 5 | FFmpeg trong Setup | PASS | `ffmpeg -version` và `ffprobe -version` chạy **từ thư mục cài** với PATH không có ffmpeg hệ thống; shim Chocolatey đã giải thành binary thật khi staging |
+| 6 | Model offline | PASS một phần | speaker SHA-256 + Whisper 4 file (`WHISPER_MB=138.5`); bản đóng gói **không còn tự tải** (ném lỗi thay vì fallback). Chưa: chạy STT thật trên máy ngắt mạng |
+| 7 | WebView2 offline | PASS một phần | `.nsi` sinh bởi build thật có `INSTALLWEBVIEW2MODE "offlineInstaller"` + file installer nhúng; CI cũng assert. Chưa: cài trên máy chưa có WebView2, ngắt mạng |
+| 8 | Không phụ thuộc máy dev | PASS | `TOOLS_VISIBLE python/node/npm = false`, `LOCALAPPDATA` cô lập, PATH chỉ còn Windows; `flow_lazy_pass=true`, `chrome_descendant_count=0` |
+| 9 | E2E chức năng thật | **NOT_RUN** | cần Windows sạch + API key thật + tài khoản Google Flow |
+| 10 | Audio/TTS/Speaker | **NOT_RUN** | unit test đạt; chưa đo mux + sync trên bản cài |
+| 11 | Storage và dữ liệu | PASS một phần | DB tự tạo, thư mục media/log/backup tự tạo, không cần Administrator (installMode currentUser); chưa: username Windows có dấu tiếng Việt |
+| 12 | Process treo | PASS | `ORPHANS_AFTER_APP_CLOSE=0`, `AFTER_FLOW_STOP=0`, `AFTER_UNINSTALL=0`; gate nằm trong installed smoke, mọi lần chạy đều kiểm |
+| 13 | Upgrade không mất dữ liệu | **NOT_RUN** | 0.1.1 không tồn tại để nâng cấp; bài test thật là **0.1.0 → 0.1.2**; dụng cụ đo đã dựng lại và xanh trên CI, cần artifact 0.1.2 |
+| 14 | Uninstall chuẩn | PASS | `UNINSTALL=PASS`, thư mục cài bị xoá sạch, `KEEP_DATA TREE_STABLE=True DB_STABLE=True FILES 3->3`; tuỳ chọn xoá toàn bộ đã có trong hook nhưng chưa đo riêng |
+| 15 | Security | PASS một phần | hai sidecar loopback-only, 401 khi thiếu/sai token, secret scan 224 file sạch; chưa: quét log của lần chạy cài đặt |
+| 16 | Authenticode | **BLOCKED** | chưa có certificate OV/EV; `Authenticode=UNSIGNED_NO_CERTIFICATE` |
+| 17 | Defender sau ký | **BLOCKED** | phụ thuộc mục 16 |
+| 18 | Full Release đủ gate | **CHƯA ĐẠT** | CI: step 12,14,16,17,18,19,20,21 **PASS**, chỉ publish fail vì repo `default_workflow_permissions = read`. Windows CI mới nhất fail ở step 7 do feed Chocolatey không trả `ffmpeg` (đã thêm fail-fast). Local: toàn bộ gate tương ứng PASS |
+| 19 | Auto Update | **NOT_WIRED** | `createUpdaterArtifacts: false`; script ký/generate manifest tồn tại nhưng release không chạy |
+| 20 | Performance | ĐẠT trên CI, CHẬM trên máy dev | runner sạch `runtime_ready_ms=3658` (<5s), idle 119,9MB; máy dev 9984ms/126,6MB và 29938ms cho lần cài đầu (đĩa 91% + AV quét cây 2,4GB) |
+
+## Bộ bàn giao theo yêu cầu
+
+```text
+TH Media_0.1.2_x64-setup.exe        787.723.679 B   (local build, 12:05)
+TH Media_0.1.2_x64-setup.exe.sha256 382543ab1ca88f43b4530d890e2daef9d6cb8116011ca007d01c6da6c68604f4
+SIGNING_STATUS.txt                  Authenticode=UNSIGNED_NO_CERTIFICATE, WebView2=offlineInstaller,
+                                    WhisperBase=bundled, FlowBrowser=Chrome_Edge_or_Bundled,
+                                    PoTProvider=bundled
+RELEASE_NOTES_0.1.2.md              trong desktop/
+FINAL_ACCEPTANCE_REPORT_0.1.2.md    tệp này
+```
+
+Chưa có `latest.json` / updater artifact (mục 19) và chưa có chữ ký (mục 16), nên hai thành phần đó vắng mặt có chủ đích, không phải bị bỏ sót.
+
+
+## Kết luận
+
+Trạng thái: **Release Candidate**. Không gọi là bản production hoàn chỉnh cho tới khi mục 9, 10, 13, 16, 17, 18 có bằng chứng runtime; 7 và 11 cần thêm phép đo trên máy sạch.
