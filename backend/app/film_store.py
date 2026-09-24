@@ -1,6 +1,7 @@
 import json
 import uuid
 from .db import connect
+from .film_event_store import purge_project_events
 
 PROJECT_JSON_FIELDS = {
     "settings_json": ("settings", {}),
@@ -90,7 +91,10 @@ def get_film_project(project_id: str):
 
 def delete_film_project(project_id: str):
     with connect() as conn:
+        # film_pipeline_events has no foreign key, so its rows only leave in this transaction.
+        events_purged = purge_project_events(conn, project_id)
         conn.execute("DELETE FROM film_projects WHERE id=?", (project_id,))
+    return {"events_purged": events_purged}
 
 
 def update_film_status(project_id: str, **values):

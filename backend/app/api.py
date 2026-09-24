@@ -497,8 +497,13 @@ def remove_film_project(project_id: str, delete_media: bool = Query(default=Fals
     media_result = None
     if delete_media:
         media_result = delete_project_media_files(project_id)
-    delete_film_project(project_id)
-    return {"ok": True, "delete_media": delete_media, "media": media_result}
+    deletion = delete_film_project(project_id) or {}
+    return {
+        "ok": True,
+        "delete_media": delete_media,
+        "media": media_result,
+        "events_purged": deletion.get("events_purged", 0),
+    }
 
 @router.post("/film/projects/{project_id}/analyze")
 def analyze_film_project(project_id: str, background_tasks: BackgroundTasks):

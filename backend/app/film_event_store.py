@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from .db import connect
+
+logger = logging.getLogger(__name__)
+
+_EMIT_FAILURES = 0
 
 EVENT_TYPES = (
     "PIPELINE_RUN_STARTED",
@@ -135,7 +140,16 @@ def emit_event(
             )
         return get_event(event_id)
     except Exception:
+        # Events are the acceptance evidence trail; a silent failure here means a gate
+        # that reports nothing happened rather than a gate that reports a problem.
+        global _EMIT_FAILURES
+        _EMIT_FAILURES += 1
+        logger.warning("event_emit_failed project=%s type=%s", project_id, event_type, exc_info=True)
         return None
+
+
+def emit_failure_count() -> int:
+    return _EMIT_FAILURES
 
 
 def get_event(event_id: str) -> dict | None:
@@ -194,3 +208,32 @@ def event_store_available() -> bool:
         return True
     except Exception:
         return False
+
+
+SYSTEM_SCOPE = "system"
+
+
+def purge_project_events(conn, project_id: str) -> int:
+    """Delete a project's events inside the caller's transaction and return how many went.
+
+    film_pipeline_events has no foreign key, so deleting a project left its log rows behind
+    permanently - the source of ~20k orphan rows in the acceptance store. Rows under
+    SYSTEM_SCOPE are app-wide diagnostics with no owning project, so they are never in scope.
+    """
+    if not project_id or project_id == SYSTEM_SCOPE:
+        return 0
+    return int(
+        conn.execute("DELETE FROM film_pipeline_events WHERE project_id=?", (project_id,)).rowcount or 0
+    )
+
+
+def count_events_without_project() -> int:
+    """Orphan count, i.e. the invariant every project delete must preserve."""
+    with connect() as conn:
+        return int(
+            conn.execute(
+                """SELECT COUNT(*) FROM film_pipeline_events
+                   WHERE project_id NOT IN (SELECT id FROM film_projects)
+                     AND project_id<>?"""
+            , (SYSTEM_SCOPE,)).fetchone()[0]
+        )
