@@ -84,8 +84,25 @@ jobs:
           if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
             choco install ffmpeg -y --no-progress
           }
-          ffmpeg -version | Select-Object -First 1
-          ffprobe -version | Select-Object -First 1
+
+          $ffmpeg = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg*\tools' -Recurse -File -Filter ffmpeg.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\bin\\ffmpeg\.exe$' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          $ffprobe = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg*\tools' -Recurse -File -Filter ffprobe.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\bin\\ffprobe\.exe$' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if ($ffmpeg -and $ffprobe) {
+            "TH_MEDIA_FFMPEG_PATH=$($ffmpeg.FullName)" >> $env:GITHUB_ENV
+            "TH_MEDIA_FFPROBE_PATH=$($ffprobe.FullName)" >> $env:GITHUB_ENV
+            & $ffmpeg.FullName -version | Select-Object -First 1
+            & $ffprobe.FullName -version | Select-Object -First 1
+          } else {
+            ffmpeg -version | Select-Object -First 1
+            ffprobe -version | Select-Object -First 1
+          }
 
       - name: Install build dependencies
         shell: pwsh

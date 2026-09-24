@@ -23,7 +23,28 @@ function Resolve-Tool([string]$Name, [string]$EnvName) {
     }
     $command = Get-Command $Name -ErrorAction SilentlyContinue
     if ($command -and $command.Source) {
-        return $command.Source
+        $source = (Resolve-Path $command.Source).Path
+
+        # Chocolatey exposes ffmpeg/ffprobe through tiny shim executables in
+        # C:\ProgramData\chocolatey\bin. Copying a shim into TH Media runtime
+        # breaks its relative target path, so resolve the real binary under lib.
+        if ($source -match "\\chocolatey\\bin\\") {
+            $chocoRoot = [Environment]::GetEnvironmentVariable("ChocolateyInstall")
+            if (-not $chocoRoot) { $chocoRoot = "C:\ProgramData\chocolatey" }
+            $chocoLib = Join-Path $chocoRoot "lib"
+            if (Test-Path $chocoLib -PathType Container) {
+                $actual = Get-ChildItem $chocoLib -Recurse -File -Filter "$Name.exe" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -notmatch "\\chocolatey\\bin\\" } |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+                if ($actual) {
+                    Write-Output "Resolved Chocolatey $Name shim to $($actual.FullName)"
+                    return $actual.FullName
+                }
+            }
+        }
+
+        return $source
     }
     throw "Missing required runtime tool: $Name. Set $EnvName or install it before build."
 }
