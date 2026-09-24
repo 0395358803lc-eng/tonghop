@@ -1,22 +1,23 @@
 param(
     [Parameter(Mandatory=$true)][string]$Installer,
-    [int]$TimeoutSeconds = 45
+    [string]$Root = "",
+    [int]$TimeoutSeconds = 60,
+    [switch]$SkipUninstall
 )
 
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) {
     throw "INSTALLER_SMOKE_MISSING: $Installer"
 }
+$Installer = (Resolve-Path -LiteralPath $Installer).Path
 
-$Root = Join-Path $env:RUNNER_TEMP ("th-media-installed-smoke-" + [Guid]::NewGuid().ToString("N"))
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    $base = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+    $Root = Join-Path $base ("th-media-installed-smoke-" + [Guid]::NewGuid().ToString("N"))
+}
 $InstallDir = Join-Path $Root "app"
 $LocalData = Join-Path $Root "LocalAppData"
 New-Item -ItemType Directory -Force -Path $InstallDir,$LocalData | Out-Null
-
-$Install = Start-Process -FilePath $Installer -ArgumentList ("/S /D=" + $InstallDir) -PassThru -Wait
-if ($Install.ExitCode -ne 0) {
-    throw "INSTALLER_SMOKE_INSTALL_FAILED: $($Install.ExitCode)"
-}
 
 $MainExe = Join-Path $InstallDir "th-media-desktop.exe"
 $BackendExe = Join-Path $InstallDir "sidecars\th-media-backend\th-media-backend.exe"
@@ -24,14 +25,7 @@ $FlowExe = Join-Path $InstallDir "sidecars\th-media-flow-bridge\th-media-flow-br
 $Ffmpeg = Join-Path $InstallDir "runtime\bin\ffmpeg.exe"
 $Ffprobe = Join-Path $InstallDir "runtime\bin\ffprobe.exe"
 $Speaker = Join-Path $InstallDir "runtime\models\speaker\3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-$Whisper = Join-Path $InstallDir "runtime\models\whisper\base\model.bin"
-$WhisperConfig = Join-Path $InstallDir "runtime\models\whisper\base\config.json"
-
-foreach ($Required in @($MainExe,$BackendExe,$FlowExe,$Ffmpeg,$Ffprobe,$Speaker,$Whisper,$WhisperConfig)) {
-    if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
-        throw "INSTALLER_SMOKE_RESOURCE_MISSING: $Required"
-    }
-}
+$WhisperDir = Join-Path $InstallDir "runtime\models\whisper\base"
 
 function Get-Descendants([int]$ParentId) {
     $all = @(Get-CimInstance Win32_Process)
@@ -51,19 +45,95 @@ function Get-Descendants([int]$ParentId) {
     return @($result)
 }
 
-$OldLocal = $env:LOCALAPPDATA
-$OldToken = $env:TH_MEDIA_AUTH_TOKEN
-$env:LOCALAPPDATA = $LocalData
-$env:TH_MEDIA_AUTH_TOKEN = "smoke_" + [Guid]::NewGuid().ToString("N")
+function Stop-Tree([int]$ParentId) {
+    foreach ($pidValue in @(Get-Descendants $ParentId | Sort-Object -Descending)) {
+        Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue
+    }
+    Stop-Process -Id $ParentId -Force -ErrorAction SilentlyContinue
+}
+
+function Get-DataTreeSignature([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $null }
+    $entries = @(Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue |
+        Sort-Object FullName |
+        ForEach-Object { "{0}|{1}|{2}" -f $_.FullName.Substring($Path.Length), $_.Length, $_.LastWriteTimeUtc.Ticks })
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($entries -join "`n"))
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "").ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Get-HttpStatus([string]$Uri) {
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $Uri -TimeoutSec 5 | Out-Null
+        return 200
+    } catch {
+        if ($_.Exception.Response) { return [int]$_.Exception.Response.StatusCode }
+        return 0
+    }
+}
+
+$Old = @{
+    PATH = $env:PATH
+    LOCALAPPDATA = $env:LOCALAPPDATA
+    PYTHONHOME = $env:PYTHONHOME
+    PYTHONPATH = $env:PYTHONPATH
+    NODE_PATH = $env:NODE_PATH
+    TH_MEDIA_AUTH_TOKEN = $env:TH_MEDIA_AUTH_TOKEN
+    TH_MEDIA_FLOW_BRIDGE_PORT = $env:TH_MEDIA_FLOW_BRIDGE_PORT
+    TH_MEDIA_FLOW_BRIDGE_LOG_LEVEL = $env:TH_MEDIA_FLOW_BRIDGE_LOG_LEVEL
+}
 $Main = $null
+$Flow = $null
 
 try {
+    # Nothing in this phase may touch the real user profile: the NSIS hooks read
+    # and write $LOCALAPPDATA during install and uninstall, and the app creates
+    # its database there. PATH is stripped of python/node/npm so the run proves
+    # the package is self-contained.
+    $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+    $env:LOCALAPPDATA = $LocalData
+    $env:TH_MEDIA_AUTH_TOKEN = "smoke_" + [Guid]::NewGuid().ToString("N")
+    Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
+
+    $ToolVisibility = [ordered]@{
+        python = [bool](Get-Command python.exe -ErrorAction SilentlyContinue)
+        node = [bool](Get-Command node.exe -ErrorAction SilentlyContinue)
+        npm = [bool](Get-Command npm.cmd -ErrorAction SilentlyContinue)
+    }
+    if ($ToolVisibility.python -or $ToolVisibility.node -or $ToolVisibility.npm) {
+        throw "INSTALLER_SMOKE_PATH_NOT_CLEAN: $($ToolVisibility | ConvertTo-Json -Compress)"
+    }
+
+    $Install = Start-Process -FilePath $Installer -ArgumentList ("/S /D=" + $InstallDir) -PassThru -Wait
+    if ($Install.ExitCode -ne 0) {
+        throw "INSTALLER_SMOKE_INSTALL_FAILED: $($Install.ExitCode)"
+    }
+
+    foreach ($Required in @($MainExe,$BackendExe,$FlowExe,$Ffmpeg,$Ffprobe,$Speaker)) {
+        if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
+            throw "INSTALLER_SMOKE_RESOURCE_MISSING: $Required"
+        }
+    }
+    foreach ($WhisperFile in @("model.bin","config.json","tokenizer.json")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $WhisperDir $WhisperFile) -PathType Leaf)) {
+            throw "INSTALLER_SMOKE_WHISPER_INCOMPLETE: $(Join-Path $WhisperDir $WhisperFile)"
+        }
+    }
+    if (@(Get-ChildItem -LiteralPath $WhisperDir -File -Filter "vocabulary*").Count -eq 0) {
+        throw "INSTALLER_SMOKE_WHISPER_INCOMPLETE: no vocabulary file in $WhisperDir"
+    }
+    $WhisperModelMb = [math]::Round((Get-Item -LiteralPath (Join-Path $WhisperDir "model.bin")).Length / 1MB, 1)
+    if ($WhisperModelMb -lt 50) { throw "INSTALLER_SMOKE_WHISPER_TOO_SMALL: $WhisperModelMb MB" }
+
     $StartedAt = Get-Date
     $Main = Start-Process -FilePath $MainExe -WorkingDirectory $InstallDir -PassThru
     $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $Backend = $null
     $Port = 0
-    $Flow = $null
+    $DbPath = Join-Path $LocalData "TH Media\Desktop\Database\aihub.db"
 
     while ((Get-Date) -lt $Deadline) {
         $Main.Refresh()
@@ -72,52 +142,124 @@ try {
         $Desc = @(Get-Descendants $Main.Id)
         $Children = @(Get-CimInstance Win32_Process | Where-Object { $Desc -contains [int]$_.ProcessId })
         $Backend = $Children | Where-Object { $_.Name -eq "th-media-backend.exe" } | Select-Object -First 1
-        $Flow = $Children | Where-Object { $_.Name -eq "th-media-flow-bridge.exe" } | Select-Object -First 1
+        $EagerFlow = $Children | Where-Object { $_.Name -eq "th-media-flow-bridge.exe" } | Select-Object -First 1
 
         if ($Backend) {
             $Listener = Get-NetTCPConnection -State Listen -OwningProcess ([int]$Backend.ProcessId) -ErrorAction SilentlyContinue |
                 Select-Object -First 1
             if ($Listener) { $Port = [int]$Listener.LocalPort }
         }
-        $DbPath = Join-Path $LocalData "TH Media\Desktop\Database\aihub.db"
         if ($Backend -and $Port -gt 0 -and (Test-Path -LiteralPath $DbPath -PathType Leaf)) { break }
         Start-Sleep -Milliseconds 300
     }
 
     if (-not $Backend -or $Port -le 0) { throw "INSTALLER_SMOKE_BACKEND_NOT_READY" }
-    if ($Flow) { throw "INSTALLER_SMOKE_FLOW_STARTED_EAGERLY" }
+    if (-not (Test-Path -LiteralPath $DbPath -PathType Leaf)) { throw "INSTALLER_SMOKE_DATABASE_NOT_CREATED" }
+    if ($EagerFlow) { throw "INSTALLER_SMOKE_FLOW_STARTED_EAGERLY" }
+    $EagerBrowsers = @(Get-CimInstance Win32_Process | Where-Object {
+        $Desc -contains [int]$_.ProcessId -and $_.Name -in @("chrome.exe","msedge.exe")
+    })
+    if ($EagerBrowsers.Count) { throw "INSTALLER_SMOKE_BROWSER_STARTED_EAGERLY: $($EagerBrowsers.Count)" }
 
     $Listeners = @(Get-NetTCPConnection -State Listen -OwningProcess ([int]$Backend.ProcessId) -ErrorAction SilentlyContinue)
-    $NonLoopback = @($Listeners | Where-Object { $_.LocalAddress -notin @("127.0.0.1","::1") })
-    if ($NonLoopback.Count) { throw "INSTALLER_SMOKE_NON_LOOPBACK_LISTENER" }
+    if (-not $Listeners.Count) { throw "INSTALLER_SMOKE_BACKEND_NO_LOOPBACK_LISTENER" }
+    if (@($Listeners | Where-Object { $_.LocalAddress -notin @("127.0.0.1","::1") }).Count) {
+        throw "INSTALLER_SMOKE_NON_LOOPBACK_LISTENER"
+    }
+
+    $BackendStatus = Get-HttpStatus "http://127.0.0.1:$Port/api/health"
+    if ($BackendStatus -notin @(200, 401)) { throw "INSTALLER_SMOKE_BACKEND_HTTP_UNEXPECTED: $BackendStatus" }
+
+    Stop-Tree $Main.Id
+    $Main = $null
+    Start-Sleep -Milliseconds 500
+
+    # The Flow sidecar must also boot from the installed package. Port 0 lets
+    # Windows assign it and the probe reads the real listener back.
+    $env:TH_MEDIA_FLOW_BRIDGE_PORT = "0"
+    $env:TH_MEDIA_FLOW_BRIDGE_LOG_LEVEL = "warning"
+    $Flow = Start-Process -FilePath $FlowExe -WorkingDirectory (Split-Path $FlowExe) -PassThru
+    $FlowDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $FlowPort = 0
+    while ((Get-Date) -lt $FlowDeadline) {
+        $Flow.Refresh()
+        if ($Flow.HasExited) { throw "INSTALLER_SMOKE_FLOW_EXITED: $($Flow.ExitCode)" }
+        $FlowListener = Get-NetTCPConnection -State Listen -OwningProcess ([int]$Flow.Id) -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($FlowListener) { $FlowPort = [int]$FlowListener.LocalPort; break }
+        Start-Sleep -Milliseconds 300
+    }
+    if ($FlowPort -le 0) { throw "INSTALLER_SMOKE_FLOW_NOT_READY" }
+    $FlowListeners = @(Get-NetTCPConnection -State Listen -OwningProcess ([int]$Flow.Id) -ErrorAction SilentlyContinue)
+    if (@($FlowListeners | Where-Object { $_.LocalAddress -notin @("127.0.0.1","::1") }).Count) {
+        throw "INSTALLER_SMOKE_FLOW_NON_LOOPBACK_LISTENER"
+    }
+
+    # A fresh install has no stored Flow API key, so 401 is the expected answer
+    # and still proves uvicorn + the FastAPI app booted with auth enforced.
+    $FlowStatus = Get-HttpStatus "http://127.0.0.1:$FlowPort/v1/health"
+    if ($FlowStatus -notin @(200, 401)) { throw "INSTALLER_SMOKE_FLOW_HTTP_UNEXPECTED: $FlowStatus" }
+    if (@(Get-CimInstance Win32_Process | Where-Object { (Get-Descendants ([int]$Flow.Id)) -contains [int]$_.ProcessId -and $_.Name -in @("chrome.exe","msedge.exe") }).Count) {
+        throw "INSTALLER_SMOKE_FLOW_BROWSER_STARTED_WITHOUT_LOGIN"
+    }
+    Stop-Tree ([int]$Flow.Id)
+    $Flow = $null
 
     $Elapsed = [math]::Round(((Get-Date) - $StartedAt).TotalMilliseconds)
     Write-Output "INSTALLER_SMOKE_STARTUP_MS=$Elapsed"
     Write-Output "INSTALLER_SMOKE_BACKEND_PORT=$Port"
-    Write-Output "INSTALLER_SMOKE_WHISPER_MB=$([math]::Round((Get-Item $Whisper).Length / 1MB, 1))"
-    Write-Output "INSTALLER_SMOKE=PASS"
-}
-finally {
-    if ($Main) {
-        try {
-            $Main.Refresh()
-            if (-not $Main.HasExited) {
-                $Desc = @(Get-Descendants $Main.Id)
-                foreach ($pidValue in ($Desc | Sort-Object -Descending)) {
-                    Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue
-                }
-                Stop-Process -Id $Main.Id -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
-    }
-    if ($null -eq $OldLocal) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue } else { $env:LOCALAPPDATA = $OldLocal }
-    if ($null -eq $OldToken) { Remove-Item Env:TH_MEDIA_AUTH_TOKEN -ErrorAction SilentlyContinue } else { $env:TH_MEDIA_AUTH_TOKEN = $OldToken }
-}
+    Write-Output "INSTALLER_SMOKE_BACKEND_HTTP=$BackendStatus"
+    Write-Output "INSTALLER_SMOKE_FLOW_PORT=$FlowPort"
+    Write-Output "INSTALLER_SMOKE_FLOW_HTTP=$FlowStatus"
+    Write-Output "INSTALLER_SMOKE_WHISPER_MB=$WhisperModelMb"
+    Write-Output "INSTALLER_SMOKE_TOOLS_VISIBLE=$($ToolVisibility | ConvertTo-Json -Compress)"
+    Write-Output "INSTALLER_SMOKE_INSTALLED=PASS"
 
-$Uninstaller = Join-Path $InstallDir "uninstall.exe"
-if (Test-Path -LiteralPath $Uninstaller) {
+    if ($SkipUninstall) {
+        Write-Output "INSTALLER_SMOKE_ROOT=$Root"
+        Write-Output "INSTALLER_SMOKE=PASS"
+        exit 0
+    }
+
+    $Uninstaller = Join-Path $InstallDir "uninstall.exe"
+    if (-not (Test-Path -LiteralPath $Uninstaller -PathType Leaf)) {
+        throw "INSTALLER_SMOKE_UNINSTALLER_MISSING: $Uninstaller"
+    }
+    $DataBefore = Get-DataTreeSignature $LocalData
+    if (-not $DataBefore) { throw "INSTALLER_SMOKE_DATA_ROOT_MISSING_BEFORE_UNINSTALL" }
+    $DbHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $DbPath).Hash
+    $FileCountBefore = @(Get-ChildItem -LiteralPath $LocalData -Recurse -File -ErrorAction SilentlyContinue).Count
+
+    # NSIS defaults the first prompt to "Keep Data" (/SD IDYES), so a silent
+    # uninstall must remove the program files and preserve the data root.
     $Uninstall = Start-Process -FilePath $Uninstaller -ArgumentList "/S" -PassThru -Wait
     if ($Uninstall.ExitCode -ne 0) {
         throw "INSTALLER_SMOKE_UNINSTALL_FAILED: $($Uninstall.ExitCode)"
     }
+    Start-Sleep -Milliseconds 800
+
+    if (Test-Path -LiteralPath $MainExe -PathType Leaf) { throw "INSTALLER_SMOKE_EXECUTABLE_NOT_REMOVED" }
+    if (Test-Path -LiteralPath $Uninstaller -PathType Leaf) { throw "INSTALLER_SMOKE_UNINSTALLER_NOT_REMOVED" }
+    if (-not (Test-Path -LiteralPath $DbPath -PathType Leaf)) { throw "INSTALLER_SMOKE_KEEP_DATA_LOST_DATABASE" }
+
+    $DbHashAfter = (Get-FileHash -Algorithm SHA256 -LiteralPath $DbPath).Hash
+    $DataAfter = Get-DataTreeSignature $LocalData
+    $FileCountAfter = @(Get-ChildItem -LiteralPath $LocalData -Recurse -File -ErrorAction SilentlyContinue).Count
+
+    Write-Output "INSTALLER_SMOKE_UNINSTALL=PASS"
+    Write-Output "INSTALLER_SMOKE_KEEP_DATA_TREE_STABLE=$($DataBefore -eq $DataAfter)"
+    Write-Output "INSTALLER_SMOKE_KEEP_DATA_DB_STABLE=$($DbHashBefore -eq $DbHashAfter)"
+    Write-Output "INSTALLER_SMOKE_KEEP_DATA_FILES=$FileCountBefore->$FileCountAfter"
+    if ($DataBefore -ne $DataAfter) { throw "INSTALLER_SMOKE_KEEP_DATA_TREE_CHANGED: $DataBefore -> $DataAfter" }
+    if ($DbHashBefore -ne $DbHashAfter) { throw "INSTALLER_SMOKE_KEEP_DATA_DB_CHANGED" }
+    Write-Output "INSTALLER_SMOKE=PASS"
+}
+finally {
+    if ($Flow) { Stop-Tree ([int]$Flow.Id) }
+    if ($Main) { Stop-Tree $Main.Id }
+    foreach ($name in $Old.Keys) {
+        if ($null -eq $Old[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        else { Set-Item "Env:$name" $Old[$name] }
+    }
+    Write-Output "INSTALLER_SMOKE_ROOT=$Root"
 }

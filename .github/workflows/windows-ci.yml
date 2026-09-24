@@ -93,7 +93,19 @@ jobs:
         shell: pwsh
         run: |
           npm --prefix frontend run build
+          if ($LASTEXITCODE -ne 0) { throw "Frontend build failed with exit code $LASTEXITCODE" }
           npm --prefix frontend run lint
+          if ($LASTEXITCODE -ne 0) { throw "Frontend lint failed with exit code $LASTEXITCODE" }
+
+      - name: Release script regression tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\test_runtime_dependency_resolution.ps1'
+          if ($LASTEXITCODE -ne 0) { throw "Runtime dependency resolution regression failed with exit code $LASTEXITCODE" }
+          python desktop\test_portable_paths.py
+          if ($LASTEXITCODE -ne 0) { throw "Portable path regression failed with exit code $LASTEXITCODE" }
+          python desktop\test_migrate_legacy_data.py
+          if ($LASTEXITCODE -ne 0) { throw "Legacy migration regression failed with exit code $LASTEXITCODE" }
 
       - name: Rust tests
         shell: pwsh

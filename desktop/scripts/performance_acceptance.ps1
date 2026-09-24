@@ -1,6 +1,6 @@
 param(
-  [string]$Exe = 'C:\Users\Admin\Desktop\tonghop-main\tonghop-main\desktop\.update-test\install-acceptance-20260924\th-media-desktop.exe',
-  [string]$BaseLocalAppData = 'C:\Users\Admin\Desktop\tonghop-main\tonghop-main\desktop\.perf-test\LocalAppData',
+  [string]$Exe = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\.update-test\install-acceptance-20260924\th-media-desktop.exe')),
+  [string]$BaseLocalAppData = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\.perf-test\LocalAppData')),
   [int]$Runs = 3,
   [int]$TimeoutSeconds = 30
 )

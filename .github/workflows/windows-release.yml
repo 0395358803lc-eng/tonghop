@@ -120,13 +120,26 @@ jobs:
           $mods += Get-ChildItem 'app\test_*.py' | ForEach-Object { 'app.' + $_.BaseName }
           $mods += Get-ChildItem 'flow_bridge\test_*.py' | ForEach-Object { 'flow_bridge.' + $_.BaseName }
           python -m unittest $mods
+          if ($LASTEXITCODE -ne 0) { throw "Backend/Flow regression failed with exit code $LASTEXITCODE" }
           Set-Location ..
           npm --prefix frontend run build
+          if ($LASTEXITCODE -ne 0) { throw "Frontend build failed with exit code $LASTEXITCODE" }
           npm --prefix frontend run lint
+          if ($LASTEXITCODE -ne 0) { throw "Frontend lint failed with exit code $LASTEXITCODE" }
           New-Item -ItemType Directory -Force -Path 'desktop\runtime','desktop\sidecars' | Out-Null
           Set-Location desktop\src-tauri
           cargo test
+          if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE" }
           cargo check
+          if ($LASTEXITCODE -ne 0) { throw "Rust check failed with exit code $LASTEXITCODE" }
+          Set-Location ..\..
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\test_runtime_dependency_resolution.ps1'
+          if ($LASTEXITCODE -ne 0) { throw "Release script regression failed with exit code $LASTEXITCODE" }
+          python desktop\test_portable_paths.py
+          if ($LASTEXITCODE -ne 0) { throw "Portable path regression failed with exit code $LASTEXITCODE" }
+          python desktop\test_migrate_legacy_data.py
+          if ($LASTEXITCODE -ne 0) { throw "Legacy migration regression failed with exit code $LASTEXITCODE" }
+          "TH_MEDIA_GATE_REGRESSION=PASS" >> $env:GITHUB_ENV
 
       - name: Optional Authenticode certificate
         shell: pwsh
@@ -210,11 +223,30 @@ jobs:
             throw 'NSIS installer is not configured for offline WebView2.'
           }
           Write-Output 'SELF_CONTAINED_RESOURCE_CHECK=PASS'
+          "TH_MEDIA_GATE_SELF_CONTAINED=PASS" >> $env:GITHUB_ENV
 
       - name: Clean-machine runtime smoke
         shell: pwsh
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\clean_machine_smoke.ps1'
+          $releaseDir = 'desktop\src-tauri\target\release'
+          $stage = Join-Path $env:RUNNER_TEMP ("th-media-cleanroom-" + [Guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item (Join-Path $releaseDir 'th-media-desktop.exe') $stage -Force
+          Copy-Item 'desktop\sidecars' (Join-Path $stage 'sidecars') -Recurse -Force
+          Copy-Item 'desktop\runtime' (Join-Path $stage 'runtime') -Recurse -Force
+          foreach ($probe in @("$stage\th-media-desktop.exe",
+                               "$stage\sidecars\th-media-backend\th-media-backend.exe",
+                               "$stage\sidecars\th-media-flow-bridge\th-media-flow-bridge.exe",
+                               "$stage\runtime\bin\ffmpeg.exe",
+                               "$stage\runtime\models\speaker\3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
+                               "$stage\runtime\models\whisper\base\model.bin")) {
+            if (-not (Test-Path $probe -PathType Leaf)) { throw "Clean-room staging missing: $probe" }
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\clean_machine_smoke.ps1' -ReleaseRoot $stage
+          $smokeExit = $LASTEXITCODE
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          if ($smokeExit -ne 0) { throw "Clean-machine runtime smoke failed with exit code $smokeExit" }
+          "TH_MEDIA_GATE_CLEANROOM=PASS" >> $env:GITHUB_ENV
 
       - name: Installed Setup.exe smoke
         shell: pwsh
@@ -222,6 +254,9 @@ jobs:
           $version = "${{ steps.meta.outputs.version }}"
           $installer = "desktop\src-tauri\target\release\bundle\nsis\TH Media_" + $version + "_x64-setup.exe"
           powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\installed_package_smoke.ps1' -Installer $installer
+          $smokeExit = $LASTEXITCODE
+          if ($smokeExit -ne 0) { throw "Installed Setup.exe smoke failed with exit code $smokeExit" }
+          "TH_MEDIA_GATE_INSTALLED=PASS" >> $env:GITHUB_ENV
 
       - name: Create release hashes and status
         id: package
@@ -255,6 +290,29 @@ jobs:
             ${{ steps.package.outputs.status }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Require every release gate to pass
+        shell: pwsh
+        run: |
+          $gates = [ordered]@{
+            REGRESSION     = $env:TH_MEDIA_GATE_REGRESSION
+            SELF_CONTAINED = $env:TH_MEDIA_GATE_SELF_CONTAINED
+            CLEANROOM      = $env:TH_MEDIA_GATE_CLEANROOM
+            INSTALLED      = $env:TH_MEDIA_GATE_INSTALLED
+          }
+          foreach ($gate in $gates.GetEnumerator()) {
+            $state = $gate.Value
+            if ([string]::IsNullOrWhiteSpace($state)) { $state = 'NOT_RUN' }
+            Write-Output ("release gate {0} = {1}" -f $gate.Key, $state)
+          }
+          $missing = @($gates.GetEnumerator() | Where-Object { $_.Value -ne 'PASS' } | ForEach-Object { $_.Key })
+          if ($missing.Count) {
+            throw "Refusing to publish: release gates not PASS -> $($missing -join ', ')"
+          }
+          if ($env:TH_MEDIA_SIGNING_STATUS -notin @('SIGNED', 'UNSIGNED_NO_CERTIFICATE')) {
+            throw "Refusing to publish: unexpected signing status '$env:TH_MEDIA_SIGNING_STATUS'"
+          }
+          Write-Output "RELEASE_GATES=ALL_PASS"
 
       - name: Publish or refresh GitHub Release
         if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)

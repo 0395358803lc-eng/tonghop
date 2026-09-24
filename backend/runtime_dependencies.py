@@ -117,9 +117,9 @@ def whisper_model_path(model_name: str = DEFAULT_WHISPER_MODEL) -> str:
     """Return a bundled/local faster-whisper model directory when available.
 
     Development installs retain faster-whisper's normal model-name fallback so a
-    developer can still use "base"/"small" from Hugging Face. Production release
-    staging places the base model under runtime/models/whisper/base, which makes
-    a clean-machine install independent of the Hugging Face cache.
+    developer can still use "base"/"small" from Hugging Face. A packaged sidecar
+    (PyInstaller ``sys.frozen``) must never fall back to it, because that turns a
+    missing bundled model into a silent first-run download from the user's machine.
     """
     requested = (model_name or DEFAULT_WHISPER_MODEL).strip() or DEFAULT_WHISPER_MODEL
 
@@ -154,4 +154,9 @@ def whisper_model_path(model_name: str = DEFAULT_WHISPER_MODEL) -> str:
         if _valid_whisper_dir(candidate):
             return str(candidate.resolve())
 
+    if getattr(sys, "frozen", False):
+        raise FileNotFoundError(
+            "Whisper model đóng gói không có trong TH Media. "
+            "Bản cài đặt phải có runtime/models/whisper/base; ứng dụng không tự tải model khi chạy."
+        )
     return requested

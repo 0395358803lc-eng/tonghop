@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,6 +63,41 @@ class RuntimeDependencyTests(unittest.TestCase):
                 patch("runtime_dependencies._runtime_roots", return_value=[Path(tmp) / "runtime-empty"]),
             ):
                 self.assertEqual(whisper_model_path("base"), "base")
+
+    def test_packaged_sidecar_never_falls_back_to_hugging_face_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "TH_MEDIA_RUNTIME_MODEL_DIR": tmp,
+                "TH_MEDIA_WHISPER_MODEL_DIR": "",
+                "TH_MEDIA_DATA_DIR": tmp,
+            }
+            with (
+                patch.dict(os.environ, env, clear=False),
+                patch("runtime_dependencies._runtime_roots", return_value=[Path(tmp) / "runtime-empty"]),
+                patch.object(sys, "frozen", True, create=True),
+            ):
+                with self.assertRaises(FileNotFoundError):
+                    whisper_model_path("base")
+
+    def test_packaged_sidecar_uses_bundled_dir_without_hugging_face_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = root / "runtime" / "models" / "whisper" / "base"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model.bin").write_bytes(b"model")
+            (model_dir / "config.json").write_text("{}", encoding="utf-8")
+            env = {
+                "TH_MEDIA_RUNTIME_MODEL_DIR": str(root / "runtime" / "models"),
+                "TH_MEDIA_WHISPER_MODEL_DIR": "",
+                "TH_MEDIA_DATA_DIR": str(root / "empty-data"),
+                "HF_HOME": str(root / "empty-hf-cache"),
+            }
+            with (
+                patch.dict(os.environ, env, clear=False),
+                patch("runtime_dependencies._runtime_roots", return_value=[]),
+                patch.object(sys, "frozen", True, create=True),
+            ):
+                self.assertEqual(Path(whisper_model_path("base")), model_dir.resolve())
 
 
 if __name__ == "__main__":

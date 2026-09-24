@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "runtime_dependency_resolution.ps1")
 $RuntimeRoot = Join-Path $ProjectRoot "desktop\runtime"
 $BinDir = Join-Path $RuntimeRoot "bin"
 $SpeakerDir = Join-Path $RuntimeRoot "models\speaker"
@@ -49,12 +50,6 @@ function Resolve-Tool([string]$Name, [string]$EnvName) {
     throw "Missing required runtime tool: $Name. Set $EnvName or install it before build."
 }
 
-function Test-WhisperModelDir([string]$Path) {
-    if (-not $Path -or -not (Test-Path $Path -PathType Container)) { return $false }
-    return (Test-Path (Join-Path $Path "model.bin") -PathType Leaf) -and
-           (Test-Path (Join-Path $Path "config.json") -PathType Leaf)
-}
-
 function Get-Sha256([string]$Path) {
     $stream = [System.IO.File]::OpenRead($Path)
     try {
@@ -72,14 +67,14 @@ function Get-Sha256([string]$Path) {
 $Ffmpeg = Resolve-Tool "ffmpeg" "TH_MEDIA_FFMPEG_PATH"
 $Ffprobe = Resolve-Tool "ffprobe" "TH_MEDIA_FFPROBE_PATH"
 
-$SpeakerCandidates = @(
+$SpeakerCandidates = Select-ExistingFilePath -Candidates @(
     [Environment]::GetEnvironmentVariable("FILM_SPEAKER_MODEL_PATH"),
     (Join-Path $env:LOCALAPPDATA "TH Media\Desktop\Models\speaker\$SpeakerName"),
     (Join-Path $ProjectRoot ".data\models\speaker\$SpeakerName"),
     (Join-Path $SpeakerDir $SpeakerName)
-) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) }
+)
 
-if (-not $SpeakerCandidates -or $SpeakerCandidates.Count -eq 0) {
+if ($SpeakerCandidates.Count -eq 0) {
     $DownloadedSpeaker = Join-Path $DownloadDir $SpeakerName
     Write-Output "Downloading speaker model from official sherpa-onnx release..."
     Invoke-WebRequest -UseBasicParsing -Uri $SpeakerUrl -OutFile $DownloadedSpeaker
@@ -88,26 +83,27 @@ if (-not $SpeakerCandidates -or $SpeakerCandidates.Count -eq 0) {
         Remove-Item -LiteralPath $DownloadedSpeaker -Force -ErrorAction SilentlyContinue
         throw "Speaker model SHA256 mismatch. Expected $SpeakerSha256, got $ActualHash."
     }
-    $SpeakerCandidates = @($DownloadedSpeaker)
+    $SpeakerCandidates = Select-ExistingFilePath -Candidates @($DownloadedSpeaker)
 }
-$SpeakerModel = (Resolve-Path $SpeakerCandidates[0]).Path
+if ($SpeakerCandidates.Count -eq 0) {
+    throw "No usable speaker model candidate; staging did not produce $SpeakerName."
+}
+$SpeakerModel = $SpeakerCandidates[0]
 
-$WhisperCandidates = New-Object System.Collections.Generic.List[string]
-$ExplicitWhisper = [Environment]::GetEnvironmentVariable("TH_MEDIA_WHISPER_MODEL_DIR")
-if (Test-WhisperModelDir $ExplicitWhisper) { $WhisperCandidates.Add((Resolve-Path $ExplicitWhisper).Path) }
-
-$DataWhisper = Join-Path $env:LOCALAPPDATA "TH Media\Desktop\Models\whisper\base"
-if (Test-WhisperModelDir $DataWhisper) { $WhisperCandidates.Add((Resolve-Path $DataWhisper).Path) }
-
+$HfSnapshotCandidates = @()
 $HfSnapshotRoot = Join-Path $env:USERPROFILE ".cache\huggingface\hub\models--Systran--faster-whisper-base\snapshots"
-if (Test-Path $HfSnapshotRoot -PathType Container) {
-    Get-ChildItem $HfSnapshotRoot -Directory -ErrorAction SilentlyContinue |
+if (Test-Path -LiteralPath $HfSnapshotRoot -PathType Container) {
+    $HfSnapshotCandidates = @(Get-ChildItem -LiteralPath $HfSnapshotRoot -Directory -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
-        ForEach-Object {
-            if (Test-WhisperModelDir $_.FullName) { $WhisperCandidates.Add($_.FullName) }
-        }
+        ForEach-Object { $_.FullName })
 }
-if (Test-WhisperModelDir $WhisperDir) { $WhisperCandidates.Add((Resolve-Path $WhisperDir).Path) }
+
+$WhisperCandidates = Select-WhisperModelDir -Candidates (
+    @(
+        [Environment]::GetEnvironmentVariable("TH_MEDIA_WHISPER_MODEL_DIR"),
+        (Join-Path $env:LOCALAPPDATA "TH Media\Desktop\Models\whisper\base")
+    ) + $HfSnapshotCandidates + @($WhisperDir)
+)
 
 if ($WhisperCandidates.Count -eq 0) {
     $Python = Get-Command python -ErrorAction SilentlyContinue
@@ -136,29 +132,31 @@ print(path)
     Remove-Item -LiteralPath $Downloader -Force -ErrorAction SilentlyContinue
     if ($DownloadExit -ne 0) { throw "Failed to download $WhisperRepo." }
     $ResolvedDownload = ($DownloadOutput | Select-Object -Last 1).Trim()
-    if (-not (Test-WhisperModelDir $ResolvedDownload)) {
+    if (-not (Test-WhisperModelDir -Path $ResolvedDownload)) {
         throw "Downloaded Whisper model directory is incomplete: $ResolvedDownload"
     }
-    $WhisperCandidates.Add((Resolve-Path $ResolvedDownload).Path)
+    $WhisperCandidates = Select-WhisperModelDir -Candidates @($ResolvedDownload)
 }
-
+if ($WhisperCandidates.Count -eq 0) {
+    throw "No usable Whisper model candidate; staging did not produce a complete base model."
+}
 $WhisperSource = $WhisperCandidates[0]
 
-Copy-Item $Ffmpeg (Join-Path $BinDir "ffmpeg.exe") -Force
-Copy-Item $Ffprobe (Join-Path $BinDir "ffprobe.exe") -Force
+Copy-Item -LiteralPath $Ffmpeg -Destination (Join-Path $BinDir "ffmpeg.exe") -Force
+Copy-Item -LiteralPath $Ffprobe -Destination (Join-Path $BinDir "ffprobe.exe") -Force
 $StagedSpeaker = Join-Path $SpeakerDir $SpeakerName
-if ((Resolve-Path $SpeakerModel).Path -ne (Resolve-Path $SpeakerDir).Path + "\$SpeakerName") {
-    Copy-Item $SpeakerModel $StagedSpeaker -Force
+if ($SpeakerModel -ne $StagedSpeaker) {
+    Copy-Item -LiteralPath $SpeakerModel -Destination $StagedSpeaker -Force
 }
 
 $ResolvedWhisperDest = $null
-if (Test-Path $WhisperDir -PathType Container) {
-    try { $ResolvedWhisperDest = (Resolve-Path $WhisperDir).Path } catch {}
+if (Test-Path -LiteralPath $WhisperDir -PathType Container) {
+    $ResolvedWhisperDest = (Resolve-Path -LiteralPath $WhisperDir).Path
 }
-if (-not $ResolvedWhisperDest -or $ResolvedWhisperDest -ne (Resolve-Path $WhisperSource).Path) {
-    if (Test-Path $WhisperDir) { Remove-Item $WhisperDir -Recurse -Force }
+if ($ResolvedWhisperDest -ne $WhisperSource) {
+    if (Test-Path -LiteralPath $WhisperDir) { Remove-Item -LiteralPath $WhisperDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $WhisperDir | Out-Null
-    Copy-Item (Join-Path $WhisperSource "*") $WhisperDir -Recurse -Force
+    Copy-Item -Path (Join-Path $WhisperSource "*") -Destination $WhisperDir -Recurse -Force
 }
 
 $StagedFfmpeg = Join-Path $BinDir "ffmpeg.exe"
@@ -177,8 +175,8 @@ if ($FfprobeExit -ne 0) { throw "Staged ffprobe failed self-check with exit code
 if ((Get-Item $StagedSpeaker).Length -lt 1MB) { throw "Staged speaker model is unexpectedly small." }
 $SpeakerHash = Get-Sha256 $StagedSpeaker
 if ($SpeakerHash -ne $SpeakerSha256) { throw "Staged speaker model hash mismatch." }
-if (-not (Test-WhisperModelDir $WhisperDir)) { throw "Staged faster-whisper base model is incomplete." }
-if ((Get-Item (Join-Path $WhisperDir "model.bin")).Length -lt 50MB) { throw "Staged Whisper model.bin is unexpectedly small." }
+if (-not (Test-WhisperModelDir -Path $WhisperDir)) { throw "Staged faster-whisper base model is incomplete." }
+if ((Get-Item -LiteralPath (Join-Path $WhisperDir "model.bin")).Length -lt 50MB) { throw "Staged Whisper model.bin is unexpectedly small." }
 
 Write-Output "TH_MEDIA_RUNTIME_BIN_DIR=$BinDir"
 Write-Output "TH_MEDIA_RUNTIME_MODEL_DIR=$(Join-Path $RuntimeRoot 'models')"
