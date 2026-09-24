@@ -119,7 +119,71 @@ Chạy trên máy Windows thật, không dùng cache của developer (`LOCALAPPD
 
 Báo cáo cũ cũng mô tả 0.1.1 như một bản sắp phát hành; thực tế 0.1.1 chưa bao giờ build xong trên CI và chưa từng có Release.
 
+## Build và nghiệm thu执行的 trên máy Windows cục bộ
+
+Toàn bộ chuỗi release được chạy lại trên máy phát triển Windows bằng `npm run tauri build`, không dựa vào cache máy khác.
+
+| Bước | Kết quả đo được |
+| --- | --- |
+| Frontend build | OK |
+| Backend sidecar + import audit | `import audit passed` |
+| Flow Bridge sidecar + import audit | `import audit passed` |
+| Staging runtime (2 lần gọi) | FFmpeg/FFprobe binary thật, speaker ONNX 39.593.761 B, Whisper base đủ 4 file, Chromium `149.0.7827.55` 415,4MB |
+| Cargo release | OK |
+| NSIS + WebView2 offline | `TH Media_0.1.2_x64-setup.exe` = **787.723.679 B** |
+
+SHA-256 của bản cuối: `382543ab1ca88f43b4530d890e2daef9d6cb8116011ca007d01c6da6c68604f4`
+
+### Clean-machine smoke (release root cô lập)
+
+```
+runtime_ready_ms        = 9984
+idle_working_set_mb     = 126.6
+database_created        = true
+flow_lazy_pass          = true
+chrome_descendant_count = 0
+```
+
+### Installed-package smoke — cài và gỡ thật
+
+```
+TOOLS_VISIBLE        = {"python":false,"node":false,"npm":false}
+FFMPEG               = ffmpeg version 8.1.1  (chạy từ thư mục cài, PATH không có ffmpeg hệ thống)
+FFPROBE              = ffprobe version 8.1.1
+BUNDLED_CHROME       = 149.0.7827.55 sizeMB=415.4
+WHISPER_MB           = 138.5
+IMPORT_AUDIT_BACKEND = checked 11, failed=0
+IMPORT_AUDIT_FLOW    = checked 5,  failed=0
+BACKEND              = port 62138 HTTP 401 (loopback, auth enforced)
+FLOW                 = port 62164 HTTP 401 (tự khởi động được từ bản cài)
+ORPHANS_AFTER_APP_CLOSE / FLOW_STOP / UNINSTALL = 0 / 0 / 0
+KEEP_DATA            = TREE_STABLE True, DB_STABLE True, FILES 3->3
+INSTALLER_SMOKE      = PASS
+```
+
+`startup_ms = 29938` là số đo trên máy dev (đĩa 91% đầy, AV quét cây 2,4GB vừa ghi); CI đo `runtime_ready_ms = 3658` trên runner sạch cho cùng cấu phần.
+
+## Phát hiện packaging mới khi chạy local
+
+1. **PoT provider chưa từng được đóng gói.** `build_backend.ps1` thu `--collect-submodules bgutil_ytdlp_pot_provider`, nhưng package đó cài plugin vào namespace PEP 420 `yt_dlp_plugins/extractor/getpot_*.py`, yt-dlp khám phá lúc chạy nên PyInstaller không thấy gì. Hệ quả: phân tích URL YouTube/TikTok/Facebook mất bộ giải PoT trên máy người dùng.
+2. **Bản sửa đầu tiên tạo bản sao kép.** Vừa `--collect-all` vừa hidden-import làm provider bị đăng ký hai lần; yt-dlp abort bản thứ hai với `AssertionError: PoTokenProvider BgUtilHTTP already registered`. Bundle đúng là **một bản file rời** trên đĩa (PYZ-only thì import được nhưng yt-dlp không khám phá ra).
+3. Kiểm nghiệm thu hiện so khớp cách production: để yt-dlp tự `load_all_plugins()` rồi kiểm `BgUtilHTTPPTP` đã đăng ký (đệ quy subclass, vì `BgUtilHTTPPTP` kế thừa `BgUtilPTPBase` chứ không kế thừa trực tiếp).
+4. `requirements.txt` để `bgutil-ytdlp-pot-provider>=2.0.0` trong khi máy dev có 1.3.1 — đã đối chiếu wheel 2.0.0: cùng đúng ba file plugin, nên hợp đồng kiểm đúng cho cả hai; nhưng nên pin version để dev và CI không lệch.
+
+## Ghi chú về Windows CI sau các push gần nhất
+
+Run 35958470284 trên `31189ee` fail ở **step 7 "Ensure FFmpeg for media tests"**, không liên quan code:
+
+```
+Failed to fetch results from V2 feed at 'https://community.chocolatey.org/api/v2/...'
+Unable to find package 'ffmpeg'.  -> Chocolatey installed 0/0 packages
+The term 'ffmpeg' is not recognized ...
+```
+
+Đây là lỗi feed bên thứ ba, và step chỉ phát hiện ở lệnh cuối. Cả hai workflow nay fail-sớm với thông báo nêu nguyên nhân và hướng xử lý (retry, hoặc pin đường tải FFmpeg trực tiếp thay cho choco).
+
 ## Gate còn mở
+
 
 | Gate | Trang thái | Chặn ở đâu |
 | --- | --- | --- |

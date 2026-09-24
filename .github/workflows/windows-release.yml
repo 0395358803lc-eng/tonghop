@@ -94,6 +94,9 @@ jobs:
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 
+          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
+            throw "FFmpeg is required to stage the release runtime and Chocolatey did not provide it (community feed outage). Re-run this workflow; if it repeats, pin a direct FFmpeg build URL instead of choco."
+          }
           if ($ffmpeg -and $ffprobe) {
             "TH_MEDIA_FFMPEG_PATH=$($ffmpeg.FullName)" >> $env:GITHUB_ENV
             "TH_MEDIA_FFPROBE_PATH=$($ffprobe.FullName)" >> $env:GITHUB_ENV

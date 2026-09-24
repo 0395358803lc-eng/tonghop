@@ -77,6 +77,9 @@ jobs:
               $env:PATH = "$chocoBin;$env:PATH"
             }
           }
+          if (-not (Get-Command ffmpeg.exe -ErrorAction SilentlyContinue)) {
+            throw "FFmpeg is required for these tests and Chocolatey did not provide it (community feed outage). Re-run this workflow; if it repeats, pin a direct FFmpeg build URL instead of choco."
+          }
           ffmpeg -version | Select-Object -First 1
           ffprobe -version | Select-Object -First 1
 
