@@ -226,6 +226,8 @@ jobs:
             "$runtime\models\speaker\3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
             "$runtime\models\whisper\base\model.bin",
             "$runtime\models\whisper\base\config.json",
+            "$runtime\models\whisper\base\tokenizer.json",
+            "$runtime\browser\chromium\chrome.exe",
             'desktop\sidecars\th-media-backend\th-media-backend.exe',
             'desktop\sidecars\th-media-flow-bridge\th-media-flow-bridge.exe'
           )
@@ -294,7 +296,7 @@ jobs:
             "Authenticode=$env:TH_MEDIA_SIGNING_STATUS",
             "WebView2=offlineInstaller",
             "WhisperBase=bundled",
-            "FlowBrowser=Chrome_or_Edge",
+            "FlowBrowser=Chrome_Edge_or_Bundled",
             "SHA256=$hash"
           ) | Set-Content -LiteralPath $statusPath -Encoding utf8
           "installer=$installer" >> $env:GITHUB_OUTPUT

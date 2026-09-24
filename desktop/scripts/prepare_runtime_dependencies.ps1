@@ -159,6 +159,43 @@ if ($ResolvedWhisperDest -ne $WhisperSource) {
     Copy-Item -Path (Join-Path $WhisperSource "*") -Destination $WhisperDir -Recurse -Force
 }
 
+# Last-resort browser for Google Flow, so a machine with neither Chrome nor
+# Edge still works. Playwright is a pinned build dependency, so asking it for
+# its own Chromium keeps the browser and the driver that launches it in step.
+$BrowserDir = Join-Path $RuntimeRoot "browser\chromium"
+$BundledBrowser = Join-Path $BrowserDir "chrome.exe"
+if (-not (Test-Path -LiteralPath $BundledBrowser -PathType Leaf)) {
+    $BrowserPython = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $BrowserPython) { throw "Python is required during release build to stage the bundled Chromium." }
+
+    Write-Output "Staging bundled Chromium through the pinned Playwright runtime..."
+    $BrowserStage = Join-Path $DownloadDir "playwright-browsers"
+    New-Item -ItemType Directory -Force -Path $BrowserStage | Out-Null
+    $PreviousBrowsersPath = $env:PLAYWRIGHT_BROWSERS_PATH
+    $env:PLAYWRIGHT_BROWSERS_PATH = $BrowserStage
+    try {
+        & $BrowserPython.Source -m playwright install chromium --no-shell
+        $BrowserExit = $LASTEXITCODE
+    } finally {
+        if ($null -eq $PreviousBrowsersPath) { Remove-Item Env:PLAYWRIGHT_BROWSERS_PATH -ErrorAction SilentlyContinue }
+        else { $env:PLAYWRIGHT_BROWSERS_PATH = $PreviousBrowsersPath }
+    }
+    if ($BrowserExit -ne 0) { throw "Bundled Chromium download failed with exit code $BrowserExit." }
+
+    $ChromiumBuild = @(Get-ChildItem -LiteralPath $BrowserStage -Directory -Filter "chromium-*" -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "chrome-win64\chrome.exe") -PathType Leaf } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1)
+    if ($ChromiumBuild.Count -eq 0) {
+        throw "Playwright produced no chromium-*/chrome-win64 build under $BrowserStage."
+    }
+    New-Item -ItemType Directory -Force -Path $BrowserDir | Out-Null
+    Copy-Item -Path (Join-Path $ChromiumBuild[0].FullName "chrome-win64\*") -Destination $BrowserDir -Recurse -Force
+}
+if (-not (Test-Path -LiteralPath $BundledBrowser -PathType Leaf)) {
+    throw "Bundled Chromium is missing from the release runtime: $BundledBrowser"
+}
+
 $StagedFfmpeg = Join-Path $BinDir "ffmpeg.exe"
 $StagedFfprobe = Join-Path $BinDir "ffprobe.exe"
 
@@ -178,8 +215,24 @@ if ($SpeakerHash -ne $SpeakerSha256) { throw "Staged speaker model hash mismatch
 if (-not (Test-WhisperModelDir -Path $WhisperDir)) { throw "Staged faster-whisper base model is incomplete." }
 if ((Get-Item -LiteralPath (Join-Path $WhisperDir "model.bin")).Length -lt 50MB) { throw "Staged Whisper model.bin is unexpectedly small." }
 
+# chrome.exe is a GUI-subsystem binary: PowerShell does not attach to its stdout,
+# so the staged tree is validated structurally here and actually executed by the
+# installed-package smoke, which waits for the process and captures its output.
+foreach ($BrowserPart in @("chrome.exe", "chrome.dll")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $BrowserDir $BrowserPart) -PathType Leaf)) {
+        throw "Bundled Chromium is incomplete: missing $BrowserPart"
+    }
+}
+$BrowserVersionDirs = @(Get-ChildItem -LiteralPath $BrowserDir -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^\d+(\.\d+){3}' })
+if ($BrowserVersionDirs.Count -eq 0) { throw "Bundled Chromium has no versioned manifest directory." }
+$BrowserBytes = (Get-ChildItem -LiteralPath $BrowserDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
+if ($BrowserBytes -lt 250MB) { throw "Bundled Chromium looks incomplete: only $([math]::Round($BrowserBytes / 1MB, 1)) MB staged." }
+Write-Output "BUNDLED_CHROME=$($BrowserVersionDirs[0].Name) sizeMB=$([math]::Round($BrowserBytes / 1MB, 1))"
+
 Write-Output "TH_MEDIA_RUNTIME_BIN_DIR=$BinDir"
 Write-Output "TH_MEDIA_RUNTIME_MODEL_DIR=$(Join-Path $RuntimeRoot 'models')"
 Write-Output "FILM_SPEAKER_MODEL_PATH=$StagedSpeaker"
 Write-Output "TH_MEDIA_WHISPER_MODEL_DIR=$WhisperDir"
+Write-Output "TH_MEDIA_BUNDLED_BROWSER_PATH=$BundledBrowser"
 Write-Output "WHISPER_MODEL_BUNDLED=PASS"

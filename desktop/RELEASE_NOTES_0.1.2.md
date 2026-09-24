@@ -19,12 +19,16 @@ Bản Windows self-contained đầu tiên vượt đủ Windows Full Release. 0.
 - Speaker identity ONNX model, xác minh SHA-256 trong release build.
 - Faster-Whisper Base model local để Video Analyzer và Film QC không phải tải model từ Hugging Face ở lần chạy đầu.
 - WebView2 Offline Installer nhúng thẳng trong Setup.exe, để cài được UI runtime trên máy chưa có WebView2 mà không cần Internet lúc cài.
+- Chromium dự phòng cho Google Flow (`runtime\browser\chromium`), chỉ dùng khi máy không có Chrome cũng không có Edge. Làm Setup.exe nặng hơn khoảng 180-200 MB.
 - TH Media frontend/Tauri runtime và local SQLite storage.
 
 ## Flow browser
 
+- Ưu tiên executable người dùng chọn trong Cài đặt.
 - Ưu tiên Google Chrome nếu có.
 - Tự động fallback Microsoft Edge nếu Chrome không được cài; người dùng không bắt buộc phải cài thêm Chrome.
+- Fallback cuối là Chromium đi kèm trong `runtime\browser\chromium\chrome.exe`, được tải qua đúng phiên bản Playwright mà app bundle, nên Flow vẫn chạy được trên máy không có Chrome lẫn Edge (Windows LTSC, máy đã gỡ Edge).
+- Thứ tự trên có regression cho cả bốn tình huống; browser bundle không thay thế trình duyệt người dùng đang dùng.
 - Vẫn dùng profile Flow riêng và CDP local loopback như trước.
 
 ## GitHub release acceptance

@@ -873,6 +873,21 @@ fn runtime_dependency_paths(data_root: &Path) -> io::Result<(PathBuf, PathBuf, P
     Ok((bin_dir, model_dir, ffmpeg, ffprobe, speaker))
 }
 
+/// Chromium shipped inside the package as the last-resort Flow browser. Optional
+/// on purpose: machines with Chrome or Edge must not need it, and a missing
+/// bundle must not stop the desktop from booting.
+fn bundled_browser_in(runtime_root: &Path) -> Option<PathBuf> {
+    let candidate = runtime_root
+        .join("browser")
+        .join("chromium")
+        .join("chrome.exe");
+    candidate.is_file().then_some(candidate)
+}
+
+fn bundled_browser_path() -> Option<PathBuf> {
+    bundled_browser_in(&shared_runtime_root().ok()?)
+}
+
 fn boot_runtime() -> io::Result<RuntimeBoot> {
     let root = local_app_root()?;
     create_runtime_dirs(&root)?;
@@ -963,6 +978,9 @@ fn boot_runtime() -> io::Result<RuntimeBoot> {
     ];
     if !chrome_path_s.is_empty() {
         flow_env.push(("TH_MEDIA_CHROME_PATH", chrome_path_s));
+    }
+    if let Some(browser) = bundled_browser_path() {
+        flow_env.push(("TH_MEDIA_BUNDLED_BROWSER_PATH", browser.to_string_lossy().into_owned()));
     }
 
     let flow_spec = FlowLaunchSpec {
@@ -1396,5 +1414,23 @@ mod tests {
         assert!(!dir.join("pending-restore.json").exists());
         assert!(!apply_pending_restore(&dir).unwrap());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bundled_browser_is_only_reported_when_the_binary_exists() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("th-media-browser-{nonce}"));
+        let chrome = root.join("browser").join("chromium").join("chrome.exe");
+
+        assert_eq!(bundled_browser_in(&root), None);
+
+        fs::create_dir_all(chrome.parent().unwrap()).unwrap();
+        fs::write(&chrome, b"chrome").unwrap();
+        assert_eq!(bundled_browser_in(&root), Some(chrome));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

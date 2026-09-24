@@ -31,10 +31,11 @@ def _now() -> str:
 def _chrome_exe() -> Path:
     """Resolve the Chromium browser used by Flow.
 
-    A user-configured executable wins. Google Chrome is preferred for backward
-    compatibility; Microsoft Edge is the clean-machine fallback because it is
-    distributed with supported Windows 10/11 installations and supports the
-    same Chromium remote-debugging flags used by the Flow bridge.
+    Order is user-configured executable, then Google Chrome, then Microsoft
+    Edge, so an existing system browser is always preferred. The bundled
+    Chromium shipped under runtime/browser/chromium is the last resort: it is
+    what lets Flow work on a machine that has neither browser, such as a Windows
+    install with Edge removed, without asking the user to install anything.
     """
     configured = os.getenv("TH_MEDIA_CHROME_PATH") or os.getenv("TH_MEDIA_BROWSER_PATH")
     candidates = [Path(configured).expanduser()] if configured else []
@@ -47,9 +48,14 @@ def _chrome_exe() -> Path:
             root / "Google" / "Chrome" / "Application" / "chrome.exe",
             root / "Microsoft" / "Edge" / "Application" / "msedge.exe",
         ])
+    bundled = os.getenv("TH_MEDIA_BUNDLED_BROWSER_PATH")
+    if bundled:
+        candidates.append(Path(bundled).expanduser())
     browser = next((path for path in candidates if path.is_file()), None)
     if browser is None:
-        raise RuntimeError("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy.")
+        raise RuntimeError(
+            "Không tìm thấy Google Chrome, Microsoft Edge hoặc trình duyệt đi kèm TH Media."
+        )
     return browser
 
 

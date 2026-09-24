@@ -70,13 +70,50 @@ class FlowSessionRuntimeTests(unittest.TestCase):
             env = {
                 "TH_MEDIA_CHROME_PATH": "",
                 "TH_MEDIA_BROWSER_PATH": "",
+                "TH_MEDIA_BUNDLED_BROWSER_PATH": "",
                 "ProgramFiles": str(Path(tmp) / "ProgramFiles"),
                 "ProgramFiles(x86)": str(Path(tmp) / "ProgramFilesX86"),
                 "LOCALAPPDATA": str(Path(tmp) / "LocalAppData"),
             }
             with patch.dict(os.environ, env, clear=False):
-                with self.assertRaisesRegex(RuntimeError, "Chrome hoặc Microsoft Edge"):
+                with self.assertRaisesRegex(RuntimeError, "Chrome, Microsoft Edge hoặc trình duyệt đi kèm"):
                     sessions._chrome_exe()
+
+    def test_bundled_chromium_is_the_last_resort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / "runtime" / "browser" / "chromium" / "chrome.exe"
+            bundle.parent.mkdir(parents=True)
+            bundle.write_bytes(b"bundled-chromium")
+            env = {
+                "TH_MEDIA_CHROME_PATH": "",
+                "TH_MEDIA_BROWSER_PATH": "",
+                "TH_MEDIA_BUNDLED_BROWSER_PATH": str(bundle),
+                "ProgramFiles": str(Path(tmp) / "ProgramFiles"),
+                "ProgramFiles(x86)": str(Path(tmp) / "ProgramFilesX86"),
+                "LOCALAPPDATA": str(Path(tmp) / "LocalAppData"),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                self.assertEqual(sessions._chrome_exe(), bundle)
+
+    def test_system_edge_is_preferred_over_the_bundled_chromium(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            program_files = Path(tmp) / "ProgramFiles"
+            edge = program_files / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+            edge.parent.mkdir(parents=True)
+            edge.write_bytes(b"fake-edge")
+            bundle = Path(tmp) / "runtime" / "browser" / "chromium" / "chrome.exe"
+            bundle.parent.mkdir(parents=True)
+            bundle.write_bytes(b"bundled-chromium")
+            env = {
+                "TH_MEDIA_CHROME_PATH": "",
+                "TH_MEDIA_BROWSER_PATH": "",
+                "TH_MEDIA_BUNDLED_BROWSER_PATH": str(bundle),
+                "ProgramFiles": str(program_files),
+                "ProgramFiles(x86)": str(Path(tmp) / "ProgramFilesX86"),
+                "LOCALAPPDATA": str(Path(tmp) / "LocalAppData"),
+            }
+            with patch.dict(os.environ, env, clear=False):
+                self.assertEqual(sessions._chrome_exe(), edge)
 
     def test_start_flow_chrome_uses_runtime_cdp_port(self):
         with tempfile.TemporaryDirectory() as tmp:
