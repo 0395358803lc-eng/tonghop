@@ -93,16 +93,27 @@ if ($WhisperCandidates.Count -eq 0) {
     if (-not $Python) { throw "Python is required during release build to download $WhisperRepo." }
 
     Write-Output "Downloading bundled faster-whisper base model..."
-    $Code = @"
+    $Downloader = Join-Path $DownloadDir "download_whisper_model.py"
+    @'
 from huggingface_hub import snapshot_download
+
 path = snapshot_download(
-    repo_id="$WhisperRepo",
-    allow_patterns=["config.json","model.bin","tokenizer.json","vocabulary.*","preprocessor_config.json"],
+    repo_id="Systran/faster-whisper-base",
+    allow_patterns=[
+        "config.json",
+        "model.bin",
+        "tokenizer.json",
+        "vocabulary.*",
+        "preprocessor_config.json",
+    ],
 )
 print(path)
-"@
-    $DownloadOutput = & $Python.Source -c $Code
-    if ($LASTEXITCODE -ne 0) { throw "Failed to download $WhisperRepo." }
+'@ | Set-Content -LiteralPath $Downloader -Encoding UTF8
+
+    $DownloadOutput = & $Python.Source $Downloader
+    $DownloadExit = $LASTEXITCODE
+    Remove-Item -LiteralPath $Downloader -Force -ErrorAction SilentlyContinue
+    if ($DownloadExit -ne 0) { throw "Failed to download $WhisperRepo." }
     $ResolvedDownload = ($DownloadOutput | Select-Object -Last 1).Trim()
     if (-not (Test-WhisperModelDir $ResolvedDownload)) {
         throw "Downloaded Whisper model directory is incomplete: $ResolvedDownload"
