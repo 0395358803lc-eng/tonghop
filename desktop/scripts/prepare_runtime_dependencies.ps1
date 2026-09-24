@@ -34,6 +34,20 @@ function Test-WhisperModelDir([string]$Path) {
            (Test-Path (Join-Path $Path "config.json") -PathType Leaf)
 }
 
+function Get-Sha256([string]$Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 $Ffmpeg = Resolve-Tool "ffmpeg" "TH_MEDIA_FFMPEG_PATH"
 $Ffprobe = Resolve-Tool "ffprobe" "TH_MEDIA_FFPROBE_PATH"
 
@@ -48,7 +62,7 @@ if (-not $SpeakerCandidates -or $SpeakerCandidates.Count -eq 0) {
     $DownloadedSpeaker = Join-Path $DownloadDir $SpeakerName
     Write-Output "Downloading speaker model from official sherpa-onnx release..."
     Invoke-WebRequest -UseBasicParsing -Uri $SpeakerUrl -OutFile $DownloadedSpeaker
-    $ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $DownloadedSpeaker).Hash.ToLowerInvariant()
+    $ActualHash = Get-Sha256 $DownloadedSpeaker
     if ($ActualHash -ne $SpeakerSha256) {
         Remove-Item -LiteralPath $DownloadedSpeaker -Force -ErrorAction SilentlyContinue
         throw "Speaker model SHA256 mismatch. Expected $SpeakerSha256, got $ActualHash."
@@ -129,7 +143,7 @@ $FfprobeVersion | Select-Object -First 1 | Write-Output
 if ($FfprobeExit -ne 0) { throw "Staged ffprobe failed self-check with exit code $FfprobeExit." }
 
 if ((Get-Item $StagedSpeaker).Length -lt 1MB) { throw "Staged speaker model is unexpectedly small." }
-$SpeakerHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $StagedSpeaker).Hash.ToLowerInvariant()
+$SpeakerHash = Get-Sha256 $StagedSpeaker
 if ($SpeakerHash -ne $SpeakerSha256) { throw "Staged speaker model hash mismatch." }
 if (-not (Test-WhisperModelDir $WhisperDir)) { throw "Staged faster-whisper base model is incomplete." }
 if ((Get-Item (Join-Path $WhisperDir "model.bin")).Length -lt 50MB) { throw "Staged Whisper model.bin is unexpectedly small." }
