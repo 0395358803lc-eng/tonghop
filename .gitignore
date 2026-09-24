@@ -20,6 +20,11 @@ desktop/.security-test/
 desktop/.uninstall-test/
 desktop/.update-test/
 desktop/runtime/
+# Acceptance screenshots land in desktop/ during manual UI runs and belong in
+# ~/Desktop/TH_Media_Archive/<action>_<stamp>/evidence, not in history. This pattern is
+# shallow on purpose: desktop/src-tauri/icons/icon.png stays tracked.
+# REPORT_*.md is delivery evidence and must stay trackable - do not ignore it.
+desktop/*.png
 .vscode/
 .DS_Store
 .kilo/
