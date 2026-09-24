@@ -325,7 +325,10 @@ jobs:
           $installer = "${{ steps.package.outputs.installer }}"
           $sha = "${{ steps.package.outputs.sha }}"
           $status = "${{ steps.package.outputs.status }}"
-          $notes = 'desktop\RELEASE_NOTES_0.1.1.md'
+          $notes = "desktop\RELEASE_NOTES_$version.md"
+          if (-not (Test-Path $notes -PathType Leaf)) {
+            throw "Release notes for this version are missing: $notes"
+          }
 
           gh release view $tag 2>$null
           if ($LASTEXITCODE -eq 0) {
