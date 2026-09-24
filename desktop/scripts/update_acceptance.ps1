@@ -1,13 +1,16 @@
 param(
     [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")),
+    [string]$InstallerA = "",
+    [string]$InstallerB = "",
     [int]$StartupTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = "Stop"
 $Desktop = Join-Path $ProjectRoot "desktop"
 $TestBase = Join-Path $Desktop ".update-test"
-$InstallerA = Join-Path $TestBase "TH Media_A_0.1.0_x64-setup.exe"
-$InstallerB = Join-Path $TestBase "TH Media_B_0.1.1_x64-setup.exe"
+$Version = [string]((Get-Content -LiteralPath (Join-Path $Desktop "src-tauri\tauri.conf.json") -Raw | ConvertFrom-Json).version)
+if (-not $InstallerA) { $InstallerA = Join-Path $TestBase "TH Media_A_0.1.0_x64-setup.exe" }
+if (-not $InstallerB) { $InstallerB = Join-Path $TestBase "TH Media_B_${Version}_x64-setup.exe" }
 $FingerprintScript = Join-Path $Desktop "scripts\acceptance\restart_fingerprint.py"
 $AssetScript = Join-Path $Desktop "scripts\acceptance\update_asset_fingerprint.py"
 $RewriteScript = Join-Path $Desktop "scripts\acceptance\rewrite_cloned_paths.py"
@@ -22,7 +25,15 @@ $MetadataBackup = Join-Path $RunRoot "real-installer-metadata"
 $ResultPath = Join-Path $TestBase "last-update-result.json"
 
 foreach ($required in @($InstallerA,$InstallerB,$FingerprintScript,$AssetScript,$RewriteScript)) {
-    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "UPDATE_ACCEPTANCE_MISSING: $required" }
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+        throw @"
+UPDATE_ACCEPTANCE_MISSING: $required
+Place the two real installer artifacts under $TestBase, or pass -InstallerA/-InstallerB:
+  A = TH Media_0.1.0_x64-setup.exe  (previous production release)
+  B = TH Media_${Version}_x64-setup.exe  (release being accepted, from the GitHub Release page)
+The gate compares user state across the upgrade, so neither file may be a source-tree build.
+"@
+    }
 }
 if (-not (Test-Path -LiteralPath $SourceDataRoot -PathType Container)) { throw "UPDATE_ACCEPTANCE_SOURCE_DATA_MISSING" }
 
