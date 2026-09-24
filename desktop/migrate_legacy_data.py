@@ -136,19 +136,40 @@ def _quoted(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def migration_path_replacements(source_root: Path, target_root: Path) -> list[tuple[Path, Path]]:
-    replacements = [
-        (source_root / "flow_chrome_profile", target_root / "FlowProfile"),
-        (source_root / "flow_sessions", target_root / "FlowSessions"),
-    ]
-    for name in COPY_DIRS:
-        replacements.append((source_root / name, target_root / directory_target(name)))
-    replacements.append((source_root, target_root))
+def migration_path_replacements(
+    source_root: Path,
+    target_root: Path,
+    source_aliases: tuple[Path, ...] = (),
+) -> list[tuple[Path, Path]]:
+    """Map every spelling of the legacy root onto the new layout.
+
+    ``migrate`` resolves its roots, but a legacy database stores paths in the
+    spelling the writing process happened to have - ``C:\\Users\\RUNNER~1\\...``
+    short names are common on Windows - so the caller passes the pre-resolve
+    form as an alias instead of leaving those rows pointing at nothing.
+    """
+    roots = [source_root]
+    for alias in source_aliases:
+        if all(str(alias) != str(existing) for existing in roots):
+            roots.append(alias)
+
+    replacements: list[tuple[Path, Path]] = []
+    for root in roots:
+        replacements.append((root / "flow_chrome_profile", target_root / "FlowProfile"))
+        replacements.append((root / "flow_sessions", target_root / "FlowSessions"))
+        for name in COPY_DIRS:
+            replacements.append((root / name, target_root / directory_target(name)))
+        replacements.append((root, target_root))
     return replacements
 
 
-def rewrite_database_paths(db_path: Path, source_root: Path, target_root: Path) -> int:
-    replacements = migration_path_replacements(source_root, target_root)
+def rewrite_database_paths(
+    db_path: Path,
+    source_root: Path,
+    target_root: Path,
+    source_aliases: tuple[Path, ...] = (),
+) -> int:
+    replacements = migration_path_replacements(source_root, target_root, source_aliases)
     pairs: list[tuple[str, str]] = []
     for old, new in replacements:
         old_s = str(old)
@@ -254,7 +275,9 @@ def _stage_path(target_root: Path) -> Path:
 
 
 def migrate(source_root: Path, target_root: Path, *, replace_target: bool = False) -> dict:
-    source_root = source_root.resolve()
+    raw_source = Path(source_root)
+    source_root = raw_source.resolve()
+    source_aliases = () if str(raw_source) == str(source_root) else (raw_source,)
     target_root = target_root.resolve()
     if not (source_root / "aihub.db").exists():
         raise RuntimeError(f"Không tìm thấy aihub.db tại {source_root}")
@@ -339,7 +362,7 @@ def migrate(source_root: Path, target_root: Path, *, replace_target: bool = Fals
 
         text_replacements = [
             (str(old), str(new))
-            for old, new in migration_path_replacements(source_root, target_root)
+            for old, new in migration_path_replacements(source_root, target_root, source_aliases)
         ]
         for json_path in (
             stage / "flow_bridge_jobs.json",
@@ -357,7 +380,7 @@ def migrate(source_root: Path, target_root: Path, *, replace_target: bool = Fals
                 text = text.replace(old.replace("\\", "/"), new.replace("\\", "/"))
             json_path.write_text(text, encoding="utf-8")
 
-        path_updates = rewrite_database_paths(target_db, source_root, target_root)
+        path_updates = rewrite_database_paths(target_db, source_root, target_root, source_aliases)
         integrity = sqlite_integrity(target_db)
         if integrity.lower() != "ok":
             raise RuntimeError(f"SQLite integrity_check failed: {integrity}")

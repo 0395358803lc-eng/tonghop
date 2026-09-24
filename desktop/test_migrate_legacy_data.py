@@ -60,7 +60,7 @@ class LegacyMigrationTests(unittest.TestCase):
 
     def test_migration_preserves_source_and_rewrites_target_paths(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             source = self.make_fixture(root)
             target = root / "TH Media"
 
@@ -109,6 +109,27 @@ class LegacyMigrationTests(unittest.TestCase):
             )
             self.assertEqual(manifest["database_integrity"], "ok")
             self.assertGreaterEqual(manifest["database_path_updates"], 1)
+
+    def test_migration_rewrites_paths_recorded_in_an_unresolved_spelling(self):
+        # Windows hands out short names such as C:\Users\RUNNER~1, and a legacy
+        # database stores whatever spelling the writing process had. Rewriting
+        # only the resolved root used to leave those rows pointing at nothing.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            alternate = Path(root.drive.lower() + str(root)[2:])
+            self.assertNotEqual(str(alternate), str(root))
+            source = self.make_fixture(alternate)
+            target = alternate / "TH Media"
+
+            result = migrate(source, target)
+
+            self.assertGreaterEqual(result["database_path_updates"], 1)
+            with closing(sqlite3.connect(root / "TH Media" / "Database" / "aihub.db")) as conn:
+                row = conn.execute("SELECT file_path FROM items WHERE id=1").fetchone()
+            self.assertEqual(
+                row[0],
+                str(root / "TH Media" / "Media" / "generated_media" / "clip.bin"),
+            )
 
     def test_non_empty_target_is_rejected_without_touching_source(self):
         with tempfile.TemporaryDirectory() as temp:
