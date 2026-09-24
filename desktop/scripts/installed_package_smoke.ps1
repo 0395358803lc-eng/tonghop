@@ -184,13 +184,18 @@ try {
     while ((Get-Date) -lt $FlowDeadline) {
         $Flow.Refresh()
         if ($Flow.HasExited) { throw "INSTALLER_SMOKE_FLOW_EXITED: $($Flow.ExitCode)" }
-        $FlowListener = Get-NetTCPConnection -State Listen -OwningProcess ([int]$Flow.Id) -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+        # A PyInstaller launcher can hand the socket to a child process, so the
+        # listener is looked up across the whole sidecar tree rather than one PID.
+        $FlowPids = @([int]$Flow.Id) + @(Get-Descendants ([int]$Flow.Id))
+        $FlowListener = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+            Where-Object { $FlowPids -contains [int]$_.OwningProcess }) | Select-Object -First 1
         if ($FlowListener) { $FlowPort = [int]$FlowListener.LocalPort; break }
         Start-Sleep -Milliseconds 300
     }
     if ($FlowPort -le 0) { throw "INSTALLER_SMOKE_FLOW_NOT_READY" }
-    $FlowListeners = @(Get-NetTCPConnection -State Listen -OwningProcess ([int]$Flow.Id) -ErrorAction SilentlyContinue)
+    $FlowPids = @([int]$Flow.Id) + @(Get-Descendants ([int]$Flow.Id))
+    $FlowListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+        Where-Object { $FlowPids -contains [int]$_.OwningProcess })
     if (@($FlowListeners | Where-Object { $_.LocalAddress -notin @("127.0.0.1","::1") }).Count) {
         throw "INSTALLER_SMOKE_FLOW_NON_LOOPBACK_LISTENER"
     }
