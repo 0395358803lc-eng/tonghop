@@ -104,6 +104,8 @@ def _classify_error(exc: Exception) -> str:
     message = str(exc).lower()
     if "flow_image_download_auth_required" in message:
         return "FLOW_IMAGE_DOWNLOAD_AUTH_REQUIRED"
+    if "flow_project_not_found" in message or "project_not_found" in message or "reason=project" in message:
+        return "FLOW_PROJECT_NOT_FOUND"
     if "flow_image_invalid_response" in message:
         return "FLOW_IMAGE_INVALID_RESPONSE"
     if "session" in message or "đăng nhập" in message or "authenticated" in message:
@@ -228,13 +230,30 @@ async def _normalized_generation(body: VideoGenerationIn) -> dict:
 
 async def _normalized_image_generation(body: ImageGenerationIn) -> dict:
     project_id = body.flow_project_id
-    if not project_id:
+    recovered_from_project_id = None
+
+    if project_id:
+        try:
+            caps = await flow_browser.image_capabilities(project_id)
+        except Exception as exc:
+            if _classify_error(exc) != "FLOW_PROJECT_NOT_FOUND":
+                raise
+            recovered_from_project_id = project_id
+            await flow_browser.restore_workspace(None)
+            projects = await flow_browser.list_projects()
+            if not projects:
+                raise RuntimeError(
+                    f"FLOW_PROJECT_NOT_FOUND: Flow project {project_id} không còn tồn tại và workspace không có project thay thế."
+                ) from exc
+            project_id = projects[0]["id"]
+            caps = await flow_browser.image_capabilities(project_id)
+    else:
         projects = await flow_browser.list_projects()
         if not projects:
-            raise RuntimeError("Tài khoản Flow chưa có project.")
+            raise RuntimeError("FLOW_PROJECT_NOT_FOUND: Tài khoản Flow chưa có project.")
         project_id = projects[0]["id"]
+        caps = await flow_browser.image_capabilities(project_id)
 
-    caps = await flow_browser.image_capabilities(project_id)
     aspects = caps.get("aspect_ratios") or ["1:1", "16:9", "9:16"]
     requested_aspect = re.sub(r"\s+", "", str(body.aspect_ratio or "1:1"))
     known = {re.sub(r"\s+", "", str(item)) for item in aspects}
@@ -252,6 +271,8 @@ async def _normalized_image_generation(body: ImageGenerationIn) -> dict:
         "model": model,
         "aspect_ratio": aspect_ratio,
         "output_count": output_count,
+        "project_recovered": recovered_from_project_id is not None,
+        "recovered_from_project_id": recovered_from_project_id,
     }
 
 
@@ -260,12 +281,17 @@ async def _run_image_job(job_id: str, body: ImageGenerationIn) -> None:
         patch_job(_jobs, job_id, status="preparing", progress=5)
         effective = await _normalized_image_generation(body)
         patch_job(_jobs, job_id, status="generating", progress=20, effective_settings=effective)
+        generate_kwargs = {
+            key: effective[key]
+            for key in ("project_id", "model", "aspect_ratio", "output_count")
+            if key in effective and effective[key] is not None
+        }
         result = await flow_browser.generate_image(
             job_id=job_id,
             prompt=body.prompt,
             media_project_id=body.project_id,
             timeout_seconds=600,
-            **effective,
+            **generate_kwargs,
         )
         patch_job(
             _jobs,

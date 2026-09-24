@@ -27,6 +27,8 @@ DEV_ALLOWED_ORIGINS = [
 
 def _configured_allowed_origins() -> list[str]:
     if os.getenv("TH_MEDIA_DESKTOP_MODE") == "1":
+        if os.getenv("TH_MEDIA_DEV_SERVER") == "1":
+            return list(DEV_ALLOWED_ORIGINS)
         return list(DESKTOP_ALLOWED_ORIGINS)
     return [
         value.strip()

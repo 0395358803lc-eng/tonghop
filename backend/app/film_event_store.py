@@ -53,6 +53,22 @@ EVENT_TYPES = (
     "RECOVERY_RECONCILED",
     "CAPABILITY_REFRESHED",
     "CAPABILITY_BLOCKED",
+    "CANONICAL_RUN_QUEUED",
+    "CANONICAL_RUN_STARTED",
+    "CANONICAL_RUN_STOP_REQUESTED",
+    "CANONICAL_RUN_STOPPED",
+    "CANONICAL_RUN_COMPLETED",
+    "CANONICAL_RUN_FAILED",
+    "CANONICAL_RESOURCE_QUEUED",
+    "CANONICAL_RESOURCE_STARTED",
+    "CANONICAL_RESOURCE_PROGRESS",
+    "CANONICAL_RESOURCE_DOWNLOADED",
+    "CANONICAL_RESOURCE_QC_STARTED",
+    "CANONICAL_RESOURCE_QC_PASSED",
+    "CANONICAL_RESOURCE_QC_FAILED",
+    "CANONICAL_RESOURCE_COMPLETED",
+    "CANONICAL_RESOURCE_FAILED",
+    "CANONICAL_RESOURCE_STOPPED",
 )
 
 SEVERITIES = ("DEBUG", "INFO", "WARN", "ERROR")
@@ -208,6 +224,23 @@ def event_store_available() -> bool:
         return True
     except Exception:
         return False
+
+
+def list_recent_events(project_id: str, *, event_prefix: str | None = None, limit: int = 100) -> list[dict]:
+    clauses = ["project_id=?"]
+    args: list = [project_id]
+    if event_prefix:
+        clauses.append("event_type LIKE ?")
+        args.append(f"{event_prefix}%")
+    sql = (
+        "SELECT * FROM film_pipeline_events WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY created_at DESC, id DESC LIMIT ?"
+    )
+    args.append(max(1, min(int(limit or 100), 500)))
+    with connect() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [_row(row) for row in reversed(rows)]
 
 
 SYSTEM_SCOPE = "system"

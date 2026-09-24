@@ -14,9 +14,19 @@ from .film_resource_store import (
     update_resource_binding,
 )
 from .film_media_service import register_canonical_from_resource
-from .film_store import get_film_project
+from .film_store import get_film_project, update_film_project
 from .film_canonical_qc import _visual_bible, evaluate_canonical_asset
+from .film_canonical_run import (
+    bump_result,
+    emit_resource_event,
+    finish_run,
+    mark_resource,
+    mark_run_started,
+    set_current_resource,
+    stop_requested,
+)
 from .flow_bridge_client import render_flow_image
+from .film_flow_errors import is_flow_dependency_error, render_error_code
 from .provider_store import get_provider
 from .providers.registry import PROVIDERS
 
@@ -187,6 +197,7 @@ async def _flow_generate(
     model: str,
     asset_version: int,
     attempt: int,
+    run_id: str | None = None,
 ) -> tuple[bytes, dict]:
     settings = project.get("settings") or {}
     flow_project_id = settings.get("flow_project_id")
@@ -200,21 +211,82 @@ async def _flow_generate(
         "aspect_ratio": _aspect_for(resource_type),
         "output_count": 1,
     }
-    result = await render_flow_image(payload)
+    last_stage = {"value": None}
+
+    def on_progress(stage: str, job: dict) -> None:
+        normalized = {
+            "submitted": "opening_flow_project",
+            "queued": "opening_flow_project",
+            "preparing": "opening_flow_project",
+            "generating": "awaiting_generation",
+            "completed": "downloading_result",
+            "succeeded": "downloading_result",
+            "success": "downloading_result",
+            "downloading_result": "downloading_result",
+            "downloaded": "downloaded",
+        }.get(str(stage or "").lower(), "awaiting_generation")
+        progress = job.get("progress") if isinstance(job, dict) else None
+        stage_key = (normalized, progress)
+        if last_stage["value"] == stage_key:
+            return
+        last_stage["value"] = stage_key
+        provider_job_id = str((job or {}).get("job_id") or (job or {}).get("id") or "") or None
+        message = {
+            "opening_flow_project": "Flow đã nhận job; đang mở project và chuẩn bị cấu hình tạo ảnh.",
+            "awaiting_generation": "Google Flow đang tạo ảnh.",
+            "downloading_result": "Ảnh đã tạo xong; đang tải kết quả về TH Media.",
+            "downloaded": "Đã tải ảnh từ Google Flow về TH Media.",
+        }.get(normalized, "Google Flow đang xử lý ảnh.")
+        mark_resource(
+            project_id, resource_type, entity_id, normalized,
+            run_id=run_id, status="pending", error=None,
+            metadata_patch={
+                "provider_job_id": provider_job_id,
+                "provider_stage": str(stage or ""),
+                "provider_progress": progress,
+            },
+        )
+        emit_resource_event(
+            project_id, run_id, "CANONICAL_RESOURCE_PROGRESS", resource_type, entity_id,
+            message=message,
+            payload={
+                "stage": normalized,
+                "provider_stage": str(stage or ""),
+                "progress": progress,
+                "provider_job_id": provider_job_id,
+            },
+        )
+
+    result = await render_flow_image(payload, on_progress=on_progress)
     image_bytes = result.get("image_bytes") or b""
     if not image_bytes:
         raise RuntimeError("Google Flow hoàn tất nhưng không trả dữ liệu ảnh.")
+
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    effective = raw.get("effective_settings") if isinstance(raw.get("effective_settings"), dict) else {}
+    resolved_flow_project_id = str(result.get("flow_project_id") or "").strip() or None
+    if resolved_flow_project_id and resolved_flow_project_id != flow_project_id:
+        settings["flow_project_id"] = resolved_flow_project_id
+        project["settings"] = settings
+        update_film_project(project_id, settings=settings)
+
     return image_bytes, {
         "provider": "flow",
         "model": result.get("model") or model,
         "requested_model": model,
         "provider_job_id": result.get("provider_job_id"),
         "source_url": result.get("source_url"),
-        "flow_project_id": result.get("flow_project_id"),
+        "flow_project_id": resolved_flow_project_id,
         "flow_media_id": result.get("media_id"),
         "aspect_ratio": result.get("aspect_ratio") or _aspect_for(resource_type),
+        "flow_project_recovered": bool(effective.get("project_recovered")),
+        "recovered_from_flow_project_id": effective.get("recovered_from_project_id"),
         "fallback_used": False,
     }
+
+
+class CanonicalGenerationStopped(RuntimeError):
+    pass
 
 
 async def generate_canonical_resource(
@@ -225,6 +297,7 @@ async def generate_canonical_resource(
     provider: str = DEFAULT_IMAGE_PROVIDER,
     model: str = DEFAULT_IMAGE_MODEL,
     max_qc_attempts: int = MAX_QC_REGENERATIONS,
+    run_id: str | None = None,
 ) -> dict:
     project = get_film_project(project_id)
     if not project:
@@ -275,6 +348,11 @@ async def generate_canonical_resource(
             best_candidate = current_candidate
 
     for retry_index in range(max(1, max_qc_attempts)):
+        if run_id and stop_requested(project_id, run_id):
+            mark_resource(project_id, resource_type, entity_id, "stopped", run_id=run_id, status="pending", error=None)
+            emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_STOPPED", resource_type, entity_id,
+                                severity="WARN", message="Đã dừng trước khi bắt đầu lần tạo tiếp theo.")
+            raise CanonicalGenerationStopped("STOPPED_BY_USER")
         attempt = base_attempt + retry_index + 1
         prompt = base_prompt
         if repair_feedback:
@@ -293,7 +371,7 @@ async def generate_canonical_resource(
             status="pending",
             error=None,
             metadata_patch={
-                "generation_status": "generating",
+                "generation_status": "opening_flow_project" if provider == "flow" else "generating",
                 "generation_provider": provider,
                 "generation_model": model,
                 "generation_prompt": prompt,
@@ -319,6 +397,7 @@ async def generate_canonical_resource(
                     actual_model,
                     next_version,
                     attempt,
+                    run_id=run_id,
                 )
             else:
                 try:
@@ -380,6 +459,17 @@ async def generate_canonical_resource(
                     },
                 )
 
+            emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_DOWNLOADED", resource_type, entity_id,
+                                message="Ảnh đã được tải và lưu vào Media.", payload={"local_path": str(saved.get("local_path") or "")})
+            if run_id and stop_requested(project_id, run_id):
+                _publish_canonical_media(saved)
+                mark_resource(project_id, resource_type, entity_id, "stopped", run_id=run_id, status="pending", error=None)
+                emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_STOPPED", resource_type, entity_id,
+                                    severity="WARN", message="Đã dừng sau khi lưu ảnh, trước bước QC.")
+                raise CanonicalGenerationStopped("STOPPED_BY_USER")
+            mark_resource(project_id, resource_type, entity_id, "qc_running", run_id=run_id, status="pending", error=None)
+            emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_QC_STARTED", resource_type, entity_id,
+                                message="Bắt đầu Canonical Vision QC.")
             qc_report = await evaluate_canonical_asset(
                 project,
                 resource_type,
@@ -411,6 +501,8 @@ async def generate_canonical_resource(
             qc_history = qc_history[-10:]
 
             if qc_report.get("passed") is True:
+                emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_QC_PASSED", resource_type, entity_id,
+                                    message="Canonical Vision QC đạt.", payload={"score": qc_report.get("overall_score")})
                 return _publish_canonical_media(update_resource_binding(
                     project_id,
                     resource_type,
@@ -460,6 +552,9 @@ async def generate_canonical_resource(
                 },
             )
             _publish_canonical_media(failed_resource)
+            emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_QC_FAILED", resource_type, entity_id,
+                                severity="WARN", message="Canonical Vision QC chưa đạt.",
+                                payload={"score": qc_report.get("overall_score"), "final_attempt": final_attempt})
             if final_attempt:
                 if best_candidate and best_candidate.get("local_path"):
                     best_qc = best_candidate.get("qc") if isinstance(best_candidate.get("qc"), dict) else qc_report
@@ -489,10 +584,12 @@ async def generate_canonical_resource(
                     + (repair_feedback[:1200] if repair_feedback else "")
                 )
 
+        except CanonicalGenerationStopped:
+            raise
         except Exception as exc:
             if str(exc).startswith("CANONICAL_QC_FAILED:"):
                 raise
-            update_resource_binding(
+            failed_resource = update_resource_binding(
                 project_id,
                 resource_type,
                 entity_id,
@@ -509,6 +606,8 @@ async def generate_canonical_resource(
                     "visual_lock": "QC_ERROR",
                 },
             )
+            if failed_resource.get("local_path"):
+                _publish_canonical_media(failed_resource)
             raise
 
     raise RuntimeError("CANONICAL_QC_FAILED: Không tạo được canonical asset đạt chuẩn.")
@@ -707,6 +806,7 @@ async def generate_project_canonical_assets(
     entity_ids: Iterable[str] | None = None,
     provider: str = DEFAULT_IMAGE_PROVIDER,
     model: str = DEFAULT_IMAGE_MODEL,
+    run_id: str | None = None,
 ) -> dict:
     async with _project_lock(project_id):
         project = get_film_project(project_id)
@@ -721,32 +821,97 @@ async def generate_project_canonical_assets(
             and (not resource_type or item.get("resource_type") == resource_type)
             and (not wanted or item.get("entity_id") in wanted)
         ]
-        results = []
-        errors = []
+        if run_id:
+            mark_run_started(project_id, run_id)
+        results: list[dict] = []
+        errors: list[dict] = []
+        processed: set[tuple[str, str]] = set()
+        stopped = False
+        fatal_error: str | None = None
+        fatal_error_code: str | None = None
         for item in selected:
-            metadata = item.get("metadata") or {}
-            if metadata.get("generation_status") == "generating":
-                continue
+            typ = str(item["resource_type"])
+            entity_id = str(item["entity_id"])
+            if run_id and stop_requested(project_id, run_id):
+                stopped = True
+                break
+            processed.add((typ, entity_id))
+            set_current_resource(project_id, run_id or "", typ, entity_id)
+            mark_resource(project_id, typ, entity_id, "starting", run_id=run_id, status="pending", error=None)
+            emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_STARTED", typ, entity_id,
+                                message="Bắt đầu xử lý ảnh chuẩn.")
             try:
                 result = await generate_canonical_resource(
-                    project_id,
-                    str(item["resource_type"]),
-                    str(item["entity_id"]),
-                    provider=provider,
-                    model=model,
+                    project_id, typ, entity_id, provider=provider, model=model, run_id=run_id,
                 )
                 results.append(result)
+                if run_id:
+                    bump_result(project_id, run_id, completed=1)
+                emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_COMPLETED", typ, entity_id,
+                                    message="Ảnh chuẩn đã hoàn tất và được lưu.")
+            except CanonicalGenerationStopped:
+                stopped = True
+                break
             except Exception as exc:
-                errors.append({
-                    "resource_type": item.get("resource_type"),
-                    "entity_id": item.get("entity_id"),
-                    "error": str(exc)[:1000],
-                })
+                message = str(exc)[:1500]
+                error_code = render_error_code(message)
+                errors.append({"resource_type": typ, "entity_id": entity_id, "error": message, "error_code": error_code})
+                mark_resource(
+                    project_id, typ, entity_id, "failed", run_id=run_id, status="error", error=message,
+                    metadata_patch={"provider_error_code": error_code, "last_error_code": error_code},
+                )
+                if run_id:
+                    bump_result(project_id, run_id, failed=1)
+                emit_resource_event(
+                    project_id, run_id, "CANONICAL_RESOURCE_FAILED", typ, entity_id,
+                    severity="ERROR", message=message, payload={"error_code": error_code},
+                )
+                if provider == "flow" and is_flow_dependency_error(message):
+                    fatal_error = message
+                    fatal_error_code = error_code
+                    break
+
+        if stopped or fatal_error:
+            for item in selected:
+                typ = str(item["resource_type"])
+                entity_id = str(item["entity_id"])
+                if (typ, entity_id) in processed:
+                    continue
+                if stopped:
+                    mark_resource(project_id, typ, entity_id, "stopped", run_id=run_id, status="pending", error=None)
+                    emit_resource_event(project_id, run_id, "CANONICAL_RESOURCE_STOPPED", typ, entity_id,
+                                        severity="WARN", message="Đã dừng theo yêu cầu người dùng.")
+                else:
+                    blocked = f"CANONICAL_BATCH_BLOCKED: {fatal_error}"[:2000]
+                    mark_resource(
+                        project_id, typ, entity_id, "blocked", run_id=run_id, status="error", error=blocked,
+                        metadata_patch={
+                            "provider_error_code": fatal_error_code or "CANONICAL_BATCH_BLOCKED",
+                            "blocked_by_error_code": fatal_error_code,
+                        },
+                    )
+                    emit_resource_event(
+                        project_id, run_id, "CANONICAL_RESOURCE_FAILED", typ, entity_id,
+                        severity="ERROR", message=blocked,
+                        payload={"error_code": "CANONICAL_BATCH_BLOCKED", "blocked_by_error_code": fatal_error_code},
+                    )
+
+        if run_id:
+            if stopped:
+                finish_run(project_id, run_id, "stopped", completed=len(results), failed=len(errors))
+            elif errors:
+                status = "failed_partial" if results else "failed"
+                finish_run(project_id, run_id, status, completed=len(results), failed=len(errors), error=fatal_error or errors[-1]["error"])
+            else:
+                finish_run(project_id, run_id, "completed", completed=len(results), failed=0)
+
         return {
             "project_id": project_id,
+            "run_id": run_id,
             "requested": len(selected),
             "succeeded": len(results),
             "failed": len(errors),
+            "stopped": stopped,
             "errors": errors,
             "resources": list_project_resources(project_id, "flow"),
         }

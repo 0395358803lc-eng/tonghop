@@ -1088,6 +1088,10 @@ class FlowBrowser:
             target_url = f"https://flow.google.com/project/{project_id}"
             await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_timeout(1800)
+            if "/404" in page.url and "reason=project" in page.url:
+                raise FlowBrowserError(
+                    f"FLOW_PROJECT_NOT_FOUND: Flow project {project_id} redirected to {page.url}."
+                )
             if not page.url.startswith(target_url):
                 raise FlowBrowserError(
                     f"SESSION_EXPIRED: Flow project navigation redirected to {page.url}. "

@@ -91,6 +91,11 @@ class FilmCanonicalQcIn(BaseModel):
     repair_model: str | None = Field(default=None, max_length=120)
 
 
+class FilmNarratorUpgradeIn(BaseModel):
+    voice_id: str = Field(default="confident-male-vietnamese", min_length=2, max_length=120)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
 class FlowBridgeSettingsIn(BaseModel):
     bridge_url: str = Field(min_length=12, max_length=500)
     api_key: str = Field(min_length=16, max_length=500)

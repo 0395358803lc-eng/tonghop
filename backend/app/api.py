@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import shutil
 import socket
@@ -26,8 +28,9 @@ from .film_pipeline_service import pause_pipeline, pipeline_status, pipeline_wor
 from .film_scene_state_store import get_execution_lease, list_active_runs, list_candidates
 from .film_dialogue_service import project_audio_requirements
 from .film_voice_profile_store import ensure_voice_profiles, list_voice_profiles
-from .film_speaker_identity import speaker_identity_status
+from .film_speaker_identity import load_project_calibration, speaker_identity_status
 from .film_speaker_acceptance import run_project_speaker_acceptance
+from .film_narrator_tts_service import apply_narrator_upgrade, preview_narrator_upgrade
 from .desktop_shutdown import (
     prepare_force_shutdown,
     request_safe_shutdown,
@@ -41,18 +44,19 @@ from .film_boundary_service import check_project_junctions, check_project_juncti
 from .film_final_assembly import assemble_project, final_status
 from .film_master_qc import run_master_qc
 from .film_acceptance_snapshot import backfill_acceptance_snapshots, get_public_acceptance_snapshot, list_acceptance_snapshots
-from .film_event_store import event_store_available, list_events
+from .film_event_store import event_store_available, list_events, list_recent_events
 from .film_observability_service import project_metrics
 from .film_recovery_service import detect_orphan_jobs, reconcile_project, recovery_state_clean
 from .film_capability_matrix import list_capability_matrix, matrix_is_fresh, refresh_capability_matrix
 from .film_canonical_service import DEFAULT_FLOW_IMAGE_MODEL, DEFAULT_IMAGE_MODEL, generate_project_canonical_assets, qc_existing_canonical_resource, qc_project_canonical_assets
+from .film_canonical_run import begin_run, canonical_status, reconcile_orphaned_resources, request_stop
 from .film_resource_store import get_project_resource, list_project_resources, lock_project_resources, save_canonical_asset, sync_project_resources, update_resource_binding
 from .config import DATA_DIR, MEDIA_DIR
 from .flow_bridge_client import delete_flow_session, get_flow_image_capabilities, get_flow_metrics, get_flow_projects, get_flow_video_capabilities, list_flow_sessions, new_flow_session, open_flow_login, restore_flow_session, save_flow_session, test_flow_bridge
 from .flow_store import delete_flow_settings, get_flow_status, save_flow_settings
 from .film_media_store import assert_media_id, get_media, list_media_versions, media_roots, public_media, validate_media_path
 from .film_media_service import delete_project_media_files, list_public_media, select_production_media
-from .schemas import ChatCreate, ChatUpdate, MessageCreate, ProviderKeyIn, VideoAnalyzeIn, VideoProxyIn, FilmProjectCreate, FilmProjectUpdate, FilmSceneUpdate, FilmRenderQueueIn, FilmPipelineStartIn, FilmCanonicalGenerateIn, FilmCanonicalQcIn, FilmResourceAssetIn, FilmResourceBindingIn, FlowBridgeSettingsIn, FlowSessionNewIn, FlowSessionSaveIn
+from .schemas import ChatCreate, ChatUpdate, MessageCreate, ProviderKeyIn, VideoAnalyzeIn, VideoProxyIn, FilmProjectCreate, FilmProjectUpdate, FilmSceneUpdate, FilmRenderQueueIn, FilmPipelineStartIn, FilmCanonicalGenerateIn, FilmCanonicalQcIn, FilmNarratorUpgradeIn, FilmResourceAssetIn, FilmResourceBindingIn, FlowBridgeSettingsIn, FlowSessionNewIn, FlowSessionSaveIn
 
 router = APIRouter(prefix="/api")
 
@@ -605,6 +609,8 @@ def generate_film_resources(project_id: str, body: FilmCanonicalGenerateIn, back
     if provider not in {"xkiro", "flow"}:
         raise HTTPException(400, "Provider tạo ảnh phải là xkiro hoặc flow")
     model = body.model or (DEFAULT_FLOW_IMAGE_MODEL if provider == "flow" else DEFAULT_IMAGE_MODEL)
+
+    reconcile_orphaned_resources(project_id)
     resources = sync_project_resources(project_id, "flow")
     wanted = set(body.entity_ids or [])
     selected = [
@@ -614,6 +620,17 @@ def generate_film_resources(project_id: str, body: FilmCanonicalGenerateIn, back
         and (not body.resource_type or item.get("resource_type") == body.resource_type)
         and (not wanted or item.get("entity_id") in wanted)
     ]
+    if not selected:
+        return {
+            "accepted": 0, "provider": provider, "model": model,
+            "run": canonical_status(project_id, reconcile=False).get("run"),
+            "resources": list_project_resources(project_id, "flow"),
+        }
+
+    run = begin_run(project_id, selected, provider, model)
+    if not run:
+        raise HTTPException(409, "Dự án đang có tiến trình tạo ảnh chuẩn chạy. Hãy dừng hoặc chờ tiến trình hiện tại hoàn tất.")
+
     for item in selected:
         update_resource_binding(
             project_id,
@@ -626,6 +643,7 @@ def generate_film_resources(project_id: str, body: FilmCanonicalGenerateIn, back
                 "generation_status": "queued",
                 "generation_provider": provider,
                 "generation_model": model,
+                "canonical_run_id": run["id"],
             },
         )
     background_tasks.add_task(
@@ -635,13 +653,73 @@ def generate_film_resources(project_id: str, body: FilmCanonicalGenerateIn, back
         entity_ids=body.entity_ids,
         provider=provider,
         model=model,
+        run_id=run["id"],
     )
     return {
         "accepted": len(selected),
         "provider": provider,
         "model": model,
+        "run": run,
         "resources": list_project_resources(project_id, "flow"),
     }
+
+
+@router.get("/film/projects/{project_id}/resources/generation/status")
+def canonical_generation_status(project_id: str):
+    if not get_film_project(project_id):
+        raise HTTPException(404, "Không tìm thấy dự án phim")
+    return canonical_status(project_id)
+
+
+@router.post("/film/projects/{project_id}/resources/generation/stop")
+def stop_canonical_generation(project_id: str):
+    if not get_film_project(project_id):
+        raise HTTPException(404, "Không tìm thấy dự án phim")
+    result = request_stop(project_id)
+    result["status"] = canonical_status(project_id, reconcile=False)
+    return result
+
+
+@router.get("/film/projects/{project_id}/resources/generation/events")
+async def canonical_generation_events(project_id: str, request: Request):
+    if not get_film_project(project_id):
+        raise HTTPException(404, "Không tìm thấy dự án phim")
+
+    async def stream():
+        seen: set[str] = set()
+        idle_rounds = 0
+        while True:
+            if await request.is_disconnected():
+                break
+            items = list_recent_events(project_id, event_prefix="CANONICAL_", limit=100)
+            emitted = False
+            for item in items:
+                event_id = str(item.get("id") or "")
+                if not event_id or event_id in seen:
+                    continue
+                seen.add(event_id)
+                emitted = True
+                payload = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+                yield f"id: {event_id}\nevent: canonical\ndata: {payload}\n\n"
+            state = canonical_status(project_id, reconcile=False)
+            if state.get("active"):
+                idle_rounds = 0
+            elif emitted:
+                idle_rounds = 0
+            else:
+                idle_rounds += 1
+            if idle_rounds >= 8:
+                yield "event: idle\ndata: {}\n\n"
+                break
+            if not emitted:
+                yield ": heartbeat\n\n"
+            await asyncio.sleep(0.75)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/film/projects/{project_id}/resources/qc")
@@ -814,6 +892,13 @@ def film_speaker_status():
     return speaker_identity_status()
 
 
+@router.get("/film/projects/{project_id}/speaker/calibration")
+def film_speaker_calibration(project_id: str):
+    if not get_film_project(project_id):
+        raise HTTPException(404, "Không tìm thấy dự án phim")
+    return {"project_id": project_id, "calibration": load_project_calibration(project_id) or {}}
+
+
 @router.post("/film/projects/{project_id}/speaker/acceptance")
 def film_speaker_acceptance(project_id: str):
     if not get_film_project(project_id):
@@ -821,6 +906,30 @@ def film_speaker_acceptance(project_id: str):
     try:
         return run_project_speaker_acceptance(project_id)
     except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/film/projects/{project_id}/narrator/preview")
+def film_narrator_preview(project_id: str, body: FilmNarratorUpgradeIn):
+    if not get_film_project(project_id):
+        raise HTTPException(404, "Không tìm thấy dự án phim")
+    try:
+        return preview_narrator_upgrade(project_id, voice_id=body.voice_id, speed=body.speed)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.post("/film/projects/{project_id}/narrator/apply")
+async def film_narrator_apply(project_id: str, body: FilmNarratorUpgradeIn):
+    if not get_film_project(project_id):
+        raise HTTPException(404, "Không tìm thấy dự án phim")
+    try:
+        return await apply_narrator_upgrade(project_id, voice_id=body.voice_id, speed=body.speed)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
 
 

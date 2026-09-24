@@ -172,8 +172,24 @@ def _filter_image_models(models: list) -> list:
     return out
 
 
-async def render_flow_image(payload: dict) -> dict:
+async def render_flow_image(payload: dict, on_progress=None) -> dict:
     base_url, api_key = _credentials()
+    last_progress_key = None
+
+    def notify(stage: str, item: dict | None = None) -> None:
+        nonlocal last_progress_key
+        body = item if isinstance(item, dict) else {}
+        key = (stage, str(body.get("status") or ""), body.get("progress"))
+        if key == last_progress_key:
+            return
+        last_progress_key = key
+        if not on_progress:
+            return
+        try:
+            on_progress(stage, body)
+        except Exception:
+            pass
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             f"{base_url}/v1/generations/image",
@@ -199,12 +215,14 @@ async def render_flow_image(payload: dict) -> dict:
     job_id = data.get("job_id") or data.get("id")
     if not job_id:
         raise FlowBridgeError("Flow Bridge không trả image job_id.")
+    notify("submitted", data)
 
     timeout_seconds = int(data.get("timeout_seconds") or 600)
     deadline = time.monotonic() + timeout_seconds
     job = data
     while time.monotonic() < deadline:
         status = str(job.get("status") or "").lower()
+        notify(status or "queued", job)
         if status in {"completed", "succeeded", "success"}:
             break
         if status in {"failed", "error", "blocked", "cancelled", "canceled"}:
@@ -222,6 +240,7 @@ async def render_flow_image(payload: dict) -> dict:
     else:
         raise FlowBridgeError(f"Flow image job {job_id} hết thời gian chờ.")
 
+    notify("downloading_result", job)
     result_url = str(job.get("result_url") or "")
     if not result_url:
         raise FlowBridgeError("Flow image job hoàn tất nhưng không có file URL.")
@@ -232,6 +251,7 @@ async def render_flow_image(payload: dict) -> dict:
         image_bytes = response.content
     if not image_bytes:
         raise FlowBridgeError("Flow image file rỗng.")
+    notify("downloaded", job)
 
     return {
         "provider_job_id": str(job_id),

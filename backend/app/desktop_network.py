@@ -113,6 +113,8 @@ def requires_internet(method: str, path: str) -> bool:
             "/auto-repair",
             "/resources/generate",
             "/resources/qc",
+            "/narrator/preview",
+            "/narrator/apply",
             "/render/queue",
             "/pipeline/start",
             "/pipeline/resume",
