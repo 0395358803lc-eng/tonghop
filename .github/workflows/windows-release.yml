@@ -139,6 +139,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Portable path regression failed with exit code $LASTEXITCODE" }
           python desktop\test_migrate_legacy_data.py
           if ($LASTEXITCODE -ne 0) { throw "Legacy migration regression failed with exit code $LASTEXITCODE" }
+          python desktop\test_acceptance_fingerprints.py
+          if ($LASTEXITCODE -ne 0) { throw "Acceptance measurement regression failed with exit code $LASTEXITCODE" }
           "TH_MEDIA_GATE_REGRESSION=PASS" >> $env:GITHUB_ENV
 
       - name: Optional Authenticode certificate

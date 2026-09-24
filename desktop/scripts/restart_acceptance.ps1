@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ReleaseRoot = Join-Path $ProjectRoot "desktop\src-tauri\target\release"
 $MainExe = Join-Path $ReleaseRoot "th-media-desktop.exe"
-$FingerprintScript = Join-Path $ProjectRoot "desktop\.build\restart_fingerprint.py"
+$FingerprintScript = Join-Path $ProjectRoot "desktop\scripts\acceptance\restart_fingerprint.py"
 
 if (-not (Test-Path $MainExe -PathType Leaf)) { throw "RESTART_ACCEPTANCE_MAIN_EXE_MISSING" }
 if (-not (Test-Path $FingerprintScript -PathType Leaf)) { throw "RESTART_ACCEPTANCE_FINGERPRINT_SCRIPT_MISSING" }
