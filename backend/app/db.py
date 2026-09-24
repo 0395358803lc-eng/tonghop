@@ -1,6 +1,9 @@
+import os
 import sqlite3
 from contextlib import contextmanager
-from .config import DB_PATH
+from pathlib import Path
+
+from . import config
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -183,9 +186,47 @@ CREATE TABLE IF NOT EXISTS film_idempotency_keys (
  result_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, expires_at TEXT);
 """
 
+ISOLATION_ENV = "TH_MEDIA_REQUIRE_DB_ISOLATION"
+ISOLATED_DB_ENV = "TH_MEDIA_ISOLATED_DB"
+
+
+def production_db_paths() -> set[str]:
+    """Stores that hold real data: the dev scratch tree and the installed app tree."""
+    candidates = [config.SOURCE_ROOT / ".data" / "aihub.db"]
+    local = os.getenv("LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local) / "TH Media" / "Desktop" / "Database" / "aihub.db")
+    resolved = set()
+    for path in candidates:
+        try:
+            resolved.add(os.path.normcase(str(path.resolve())))
+        except OSError:  # pragma: no cover - unreadable root
+            resolved.add(os.path.normcase(str(path)))
+    return resolved
+
+
+def _guard_isolation(path) -> None:
+    """Fail closed: a gated run may not open a store that holds real data.
+
+    The suite isolates two ways - the rebind harness, and a subprocess handed
+    TH_MEDIA_DB_PATH - so the question is "is this a production path", not "did you use
+    my helper". config resolves its paths at import time, so without this guard a test
+    that forgets to isolate appends rows to the acceptance store and still reports OK.
+    """
+    if os.getenv(ISOLATION_ENV) != "1":
+        return
+    try:
+        target = os.path.normcase(str(Path(str(path)).resolve()))
+    except OSError:
+        return
+    if target in production_db_paths():
+        raise RuntimeError(f"DB_ISOLATION_REQUIRED: refusing to open production store {path}")
+
+
 @contextmanager
 def connect():
-    conn = sqlite3.connect(DB_PATH)
+    _guard_isolation(config.DB_PATH)
+    conn = sqlite3.connect(config.DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     try:

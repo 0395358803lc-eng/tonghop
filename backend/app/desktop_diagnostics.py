@@ -5,7 +5,6 @@ import os
 import platform
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import zipfile
@@ -14,7 +13,9 @@ from pathlib import Path
 
 from runtime_dependencies import ffmpeg_path, ffprobe_path, speaker_model_path
 
-from .config import DATA_DIR, DB_PATH
+from . import config
+from .config import DATA_DIR
+from .db import connect
 from .film_qc_service import get_qc_status
 from .film_scene_state_store import list_active_runs
 from .film_speaker_identity import speaker_identity_status
@@ -80,15 +81,15 @@ def _db_status() -> dict:
     integrity = "unavailable"
     user_version = None
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with connect() as conn:
             integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
             user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
     except Exception as exc:
         integrity = f"error:{type(exc).__name__}"
     return {
-        "path": str(DB_PATH),
-        "exists": DB_PATH.is_file(),
-        "size_bytes": DB_PATH.stat().st_size if DB_PATH.is_file() else 0,
+        "path": str(config.DB_PATH),
+        "exists": config.DB_PATH.is_file(),
+        "size_bytes": config.DB_PATH.stat().st_size if config.DB_PATH.is_file() else 0,
         "integrity": integrity,
         "user_version": user_version,
     }
