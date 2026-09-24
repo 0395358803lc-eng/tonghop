@@ -22,6 +22,28 @@ if ($Running.Count) {
     throw "Backend sidecar đang chạy và khóa release directory. Hãy đóng TH Media trước khi build. $Details"
 }
 
+# PyInstaller wipes the dist dir itself, and a leftover handle - another shell
+# sitting in that folder, or antivirus still scanning the previous 1.1 GB output -
+# fails the build deep inside its own traceback. Clearing it here with retries
+# turns that into an actionable message.
+if (Test-Path -LiteralPath $TargetDir) {
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $TargetDir -Recurse -Force -ErrorAction Stop
+            break
+        } catch {
+            if ($attempt -eq 5) {
+                throw "Cannot clear $TargetDir after 5 attempts: $($_.Exception.Message). A process is holding a handle inside it - close any shell whose current directory is there, and any running TH Media sidecar."
+            }
+            Start-Sleep -Seconds (2 * $attempt)
+        }
+    }
+}
+
+# yt_dlp_plugins must ship as real files: yt-dlp finds PoT providers by scanning
+# the namespace with pkgutil, and a PYZ-only copy is importable by name yet never
+# discovered. Adding hidden imports on top registers the same provider twice and
+# yt-dlp aborts the second one with "PoTokenProvider BgUtilHTTP already registered".
 $Args = @(
     "--noconfirm",
     "--clean",
@@ -36,9 +58,6 @@ $Args = @(
     "--collect-all", "faster_whisper",
     "--collect-all", "av",
     "--collect-all", "yt_dlp_plugins",
-    "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil",
-    "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil_http",
-    "--hidden-import", "yt_dlp_plugins.extractor.getpot_bgutil_script",
     $Entry
 )
 

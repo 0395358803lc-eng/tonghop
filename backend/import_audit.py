@@ -24,8 +24,6 @@ BACKEND_MODULES = [
     "cryptography.fernet",
     "psutil",
     "yt_dlp",
-    "yt_dlp_plugins.extractor.getpot_bgutil",
-    "yt_dlp_plugins.extractor.getpot_bgutil_http",
     "PIL.Image",
     "av",
     "faster_whisper",
@@ -55,56 +53,52 @@ def audit(modules: list[str]) -> list[dict]:
     return results
 
 
-def audit_plugins() -> list[dict]:
-    """Prove the yt-dlp PoT providers are usable, not merely present.
+def _subclass_names(root: type) -> set[str]:
+    """Every subclass below root, not just the direct children.
 
-    These plugins are PoTokenProvider subclasses discovered through the
-    yt_dlp_plugins namespace, so a bundle that keeps the files but loses the
-    namespace - or ships only the abstract base - would still import cleanly.
-    Requiring a concrete provider is the end of the contract the app depends on:
-    the extractor arg youtubepot-bgutilhttp resolves to BgUtilHTTPPTP.
+    BgUtilHTTPPTP extends BgUtilPTPBase rather than PoTokenProvider directly, so
+    __subclasses__() on the base alone reports the abstract parent and hides the
+    provider the application actually uses.
     """
-    import inspect
+    names: set[str] = set()
+    pending = [root]
+    while pending:
+        for child in pending.pop().__subclasses__():
+            if child.__name__ not in names:
+                names.add(child.__name__)
+                pending.append(child)
+    return names
 
+
+def audit_plugins() -> list[dict]:
+    """Prove yt-dlp can load the PoT providers, the way the app does.
+
+    The app never imports these modules: yt-dlp discovers them through the
+    yt_dlp_plugins namespace and each plugin registers itself once under a unique
+    provider name. Importing a plugin here first would double-register and raise
+    "PoTokenProvider BgUtilHTTP already registered", so this mirrors production:
+    let yt-dlp load, then check what it registered.
+    """
     from yt_dlp.extractor.youtube.pot.provider import PoTokenProvider
     from yt_dlp.plugins import load_all_plugins
-
-    # The shared base module only defines the abstract provider; the http module
-    # is the one the app's youtubepot-bgutilhttp arg resolves to, so that one must
-    # provide a concrete, instantiable class.
-    expectations = (
-        ("yt_dlp_plugins.extractor.getpot_bgutil", False),
-        ("yt_dlp_plugins.extractor.getpot_bgutil_http", True),
-    )
 
     results = []
     try:
         load_all_plugins()
+        results.append({"plugin": "yt_dlp.plugins.load_all_plugins", "ok": True,
+                        "classes": [], "error": None})
     except BaseException as exc:
         results.append({"plugin": "yt_dlp.plugins.load_all_plugins", "ok": False,
                         "classes": [], "error": f"{type(exc).__name__}: {exc}"})
 
-    for module_name, needs_concrete in expectations:
-        try:
-            module = importlib.import_module(module_name)
-            found = [
-                obj
-                for _, obj in inspect.getmembers(module, inspect.isclass)
-                if issubclass(obj, PoTokenProvider) and obj is not PoTokenProvider
-                and obj.__module__ == module.__name__
-            ]
-            classes = sorted(obj.__name__ for obj in found)
-            concrete = [obj for obj in found if not inspect.isabstract(obj)]
-            usable = bool(concrete) if needs_concrete else bool(found)
-            results.append({
-                "plugin": module_name,
-                "ok": usable,
-                "classes": classes,
-                "error": None if usable else "no usable PoTokenProvider subclass defined",
-            })
-        except BaseException as exc:
-            results.append({"plugin": module_name, "ok": False, "classes": [],
-                            "error": f"{type(exc).__name__}: {exc}"})
+    registered = sorted(_subclass_names(PoTokenProvider))
+    for expected in ("BgUtilHTTPPTP",):
+        results.append({
+            "plugin": f"PoTokenProvider:{expected}",
+            "ok": expected in registered,
+            "classes": registered,
+            "error": None if expected in registered else "provider not registered by yt-dlp",
+        })
     return results
 
 
