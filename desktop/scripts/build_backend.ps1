@@ -35,7 +35,7 @@ $Args = @(
     "--collect-all", "sherpa_onnx",
     "--collect-all", "faster_whisper",
     "--collect-all", "av",
-    "--collect-submodules", "bgutil_ytdlp_pot_provider",
+    "--collect-submodules", "yt_dlp_plugins",
     $Entry
 )
 

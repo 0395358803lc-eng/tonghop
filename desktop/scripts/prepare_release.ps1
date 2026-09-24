@@ -54,6 +54,18 @@ if (-not (Test-Path (Join-Path $Sidecars "th-media-flow-bridge\th-media-flow-bri
     throw "Release Flow Bridge sidecar is missing"
 }
 
+# Fail here rather than on a user's machine: the frozen interpreters must be able
+# to import the modules the app only loads while running.
+foreach ($Sidecar in @("th-media-backend", "th-media-flow-bridge")) {
+    $Exe = Join-Path $Sidecars "$Sidecar\$Sidecar.exe"
+    $Audit = & $Exe --import-audit 2>&1
+    $AuditExit = $LASTEXITCODE
+    if ($AuditExit -ne 0) {
+        throw "$Sidecar import audit failed with exit code $AuditExit : $(($Audit | Out-String) -replace '\s+', ' ')"
+    }
+    Write-Output "[TH Media] $Sidecar import audit passed."
+}
+
 $SignScript = Join-Path $ProjectRoot "desktop\scripts\sign_windows.ps1"
 $Thumbprint = [Environment]::GetEnvironmentVariable("TH_MEDIA_CODE_SIGN_THUMBPRINT")
 $RequireSigning = [Environment]::GetEnvironmentVariable("TH_MEDIA_REQUIRE_CODE_SIGN") -eq "1"

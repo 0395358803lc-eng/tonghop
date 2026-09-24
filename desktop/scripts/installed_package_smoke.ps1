@@ -26,6 +26,28 @@ $Ffmpeg = Join-Path $InstallDir "runtime\bin\ffmpeg.exe"
 $Ffprobe = Join-Path $InstallDir "runtime\bin\ffprobe.exe"
 $Speaker = Join-Path $InstallDir "runtime\models\speaker\3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 $WhisperDir = Join-Path $InstallDir "runtime\models\whisper\base"
+$BundledBrowser = Join-Path $InstallDir "runtime\browser\chromium\chrome.exe"
+$BrowserRoot = Split-Path $BundledBrowser
+
+function Get-OwnProcesses {
+    # Only processes that provably belong to this installation: the exe paths are
+    # inside the install dir, or a browser launched with this run's isolated
+    # profile. A developer's own Chrome or TH Media must not fail the gate.
+    @(Get-CimInstance Win32_Process | Where-Object {
+        ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallDir, [System.StringComparison]::OrdinalIgnoreCase)) -or
+        ($_.Name -in @("chrome.exe", "msedge.exe") -and $_.CommandLine -and
+            ($_.CommandLine -like "*$LocalData*" -or $_.CommandLine -like "*$BrowserRoot*"))
+    })
+}
+
+function Assert-NoOrphanProcesses([string]$Phase) {
+    $left = @(Get-OwnProcesses)
+    if ($left.Count) {
+        $detail = ($left | ForEach-Object { "$($_.ProcessId):$($_.Name)" }) -join ", "
+        throw "INSTALLER_SMOKE_ORPHAN_PROCESSES after ${Phase} -> $detail"
+    }
+    Write-Output "INSTALLER_SMOKE_ORPHANS_AFTER_$($Phase.ToUpper().Replace('-','_'))=0"
+}
 
 function Get-Descendants([int]$ParentId) {
     $all = @(Get-CimInstance Win32_Process)
@@ -112,7 +134,7 @@ try {
         throw "INSTALLER_SMOKE_INSTALL_FAILED: $($Install.ExitCode)"
     }
 
-    foreach ($Required in @($MainExe,$BackendExe,$FlowExe,$Ffmpeg,$Ffprobe,$Speaker)) {
+    foreach ($Required in @($MainExe,$BackendExe,$FlowExe,$Ffmpeg,$Ffprobe,$Speaker,$BundledBrowser)) {
         if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
             throw "INSTALLER_SMOKE_RESOURCE_MISSING: $Required"
         }
@@ -127,6 +149,54 @@ try {
     }
     $WhisperModelMb = [math]::Round((Get-Item -LiteralPath (Join-Path $WhisperDir "model.bin")).Length / 1MB, 1)
     if ($WhisperModelMb -lt 50) { throw "INSTALLER_SMOKE_WHISPER_TOO_SMALL: $WhisperModelMb MB" }
+
+    # Existence is not enough for the console tools: they must run from the
+    # install tree with no system FFmpeg on PATH. The bundled browser is checked
+    # structurally instead, because launching chrome.exe on a machine that
+    # already runs Chrome hands the call to that instance and reports
+    # "Opening in existing browser session" rather than a version.
+    foreach ($Probe in @(
+        @{ Name = "FFMPEG"; Exe = $Ffmpeg; Args = @("-version"); Pattern = "ffmpeg" },
+        @{ Name = "FFPROBE"; Exe = $Ffprobe; Args = @("-version"); Pattern = "ffprobe" }
+    )) {
+        # `Select-Object -First 1` would stop the native command mid-stream and
+        # leave $LASTEXITCODE at -1, so all output is captured before taking a line.
+        $probeRaw = & $Probe.Exe @($Probe.Args) 2>&1
+        $probeExit = $LASTEXITCODE
+        $probeLines = @($probeRaw)
+        $probeOut = if ($probeLines.Count -gt 0) { [string]$probeLines[0] } else { "" }
+        if ($probeExit -ne 0 -or $probeOut -notmatch $Probe.Pattern) {
+            throw "INSTALLER_SMOKE_BINARY_EXEC_FAILED: $($Probe.Name) exit=$probeExit out=$probeOut"
+        }
+        Write-Output "INSTALLER_SMOKE_$($Probe.Name)=$($probeOut -replace '\s+', ' ')"
+    }
+    $BrowserRoot = Split-Path $BundledBrowser
+    foreach ($BrowserPart in @("chrome.exe", "chrome.dll")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $BrowserRoot $BrowserPart) -PathType Leaf)) {
+            throw "INSTALLER_SMOKE_BUNDLED_BROWSER_INCOMPLETE: missing $BrowserPart"
+        }
+    }
+    $BrowserManifest = @(Get-ChildItem -LiteralPath $BrowserRoot -File -Filter "*.manifest" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^\d+(\.\d+){3}\.manifest$' })
+    if ($BrowserManifest.Count -eq 0) { throw "INSTALLER_SMOKE_BUNDLED_BROWSER_INCOMPLETE: no versioned manifest" }
+    $BrowserBytes = (Get-ChildItem -LiteralPath $BrowserRoot -Recurse -File | Measure-Object -Property Length -Sum).Sum
+    if ($BrowserBytes -lt 250MB) {
+        throw "INSTALLER_SMOKE_BUNDLED_BROWSER_TOO_SMALL: $([math]::Round($BrowserBytes / 1MB, 1)) MB"
+    }
+    Write-Output "INSTALLER_SMOKE_BUNDLED_CHROME=$($BrowserManifest[0].BaseName) sizeMB=$([math]::Round($BrowserBytes / 1MB, 1))"
+
+    # The packaged sidecars must be able to import the modules the application
+    # only reaches at runtime; PyInstaller cannot follow those statically.
+    foreach ($Audit in @(@{ Name = "BACKEND"; Exe = $BackendExe }, @{ Name = "FLOW"; Exe = $FlowExe })) {
+        $auditRaw = & $Audit.Exe --import-audit 2>&1
+        $auditExit = $LASTEXITCODE
+        $auditText = ($auditRaw | Out-String)
+        if ($auditExit -ne 0) {
+            throw "INSTALLER_SMOKE_IMPORT_AUDIT_FAILED $($Audit.Name) exit=$auditExit -> $($auditText -replace '\s+', ' ')"
+        }
+        $auditReport = $auditText | ConvertFrom-Json
+        Write-Output "INSTALLER_SMOKE_IMPORT_AUDIT_$($Audit.Name)=checked $($auditReport.checked), failed=$(@($auditReport.failed).Count)"
+    }
 
     $StartedAt = Get-Date
     $Main = Start-Process -FilePath $MainExe -WorkingDirectory $InstallDir -PassThru
@@ -172,7 +242,8 @@ try {
 
     Stop-Tree $Main.Id
     $Main = $null
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 800
+    Assert-NoOrphanProcesses "app-close"
 
     # The Flow sidecar must also boot from the installed package. Port 0 lets
     # Windows assign it and the probe reads the real listener back.
@@ -209,6 +280,8 @@ try {
     }
     Stop-Tree ([int]$Flow.Id)
     $Flow = $null
+    Start-Sleep -Milliseconds 800
+    Assert-NoOrphanProcesses "flow-stop"
 
     $Elapsed = [math]::Round(((Get-Date) - $StartedAt).TotalMilliseconds)
     Write-Output "INSTALLER_SMOKE_STARTUP_MS=$Elapsed"
@@ -257,6 +330,7 @@ try {
     Write-Output "INSTALLER_SMOKE_KEEP_DATA_FILES=$FileCountBefore->$FileCountAfter"
     if ($DataBefore -ne $DataAfter) { throw "INSTALLER_SMOKE_KEEP_DATA_TREE_CHANGED: $DataBefore -> $DataAfter" }
     if ($DbHashBefore -ne $DbHashAfter) { throw "INSTALLER_SMOKE_KEEP_DATA_DB_CHANGED" }
+    Assert-NoOrphanProcesses "uninstall"
     Write-Output "INSTALLER_SMOKE=PASS"
 }
 finally {
