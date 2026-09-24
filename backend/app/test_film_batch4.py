@@ -6,7 +6,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from .db import connect, init_db
+from .data_isolation import IsolatedDataTestCase
+from .db import connect
 from .film_acceptance_snapshot import backfill_acceptance_snapshots
 from .film_boundary_store import get_pair_junction, upsert_junction
 from .film_boundary_service import retry_junction
@@ -72,10 +73,10 @@ def _count(sql, args=()):
         return conn.execute(sql, args).fetchone()[0]
 
 
-class Batch4Case(unittest.TestCase):
+class Batch4Case(IsolatedDataTestCase):
     @classmethod
     def setUpClass(cls):
-        init_db()
+        super().setUpClass()
         cls.project = create_film_project(
             "__batch4_hardening__",
             "Day la kich ban kiem thu observability recovery capability dai hon hai muoi ky tu.",
@@ -102,6 +103,7 @@ class Batch4Case(unittest.TestCase):
         delete_film_project(cls.project["id"])
         with connect() as conn:
             conn.execute("DELETE FROM film_capability_matrix WHERE model LIKE '__B4%' OR model LIKE 'Veo 3.1 - Lite B4%'")
+        super().tearDownClass()
 
 
 class ObservabilityTests(Batch4Case):

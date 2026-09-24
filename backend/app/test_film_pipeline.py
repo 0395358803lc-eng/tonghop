@@ -35,6 +35,7 @@ from .film_scene_state_store import (
     transition_status,
     upsert_scene_state,
 )
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_store import append_film_scenes, create_film_project, delete_film_project
 
@@ -193,9 +194,10 @@ class ReferenceResolverTests(unittest.TestCase):
         self.assertTrue(resolved["overflow"]["blocked"])
 
 
-class PipelineStoreTests(unittest.TestCase):
+class PipelineStoreTests(IsolatedDataTestCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         init_db()
         cls.project = create_film_project(
             "__pipeline_core_test__",
@@ -208,6 +210,7 @@ class PipelineStoreTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         delete_film_project(cls.project["id"])
+        super().tearDownClass()
 
     def test_ledger_only_via_save(self):
         pid = self.project["id"]
@@ -432,9 +435,10 @@ class HardenReferencePayloadTests(unittest.TestCase):
         self.assertTrue((built["resolved"].get("overflow") or {}).get("blocked"))
 
 
-class PipelineControlTests(unittest.TestCase):
+class PipelineControlTests(IsolatedDataTestCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         init_db()
         cls.project = create_film_project(
             "__pipeline_ctrl_test__",
@@ -447,6 +451,7 @@ class PipelineControlTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         delete_film_project(cls.project["id"])
+        super().tearDownClass()
 
     def test_pause_resume_stop_contract(self):
         from .film_scene_state_store import create_run, update_run
@@ -682,7 +687,7 @@ class ReferenceCapacityPolicyTests(unittest.TestCase):
         self.assertNotIn("previous_last_frame", [x.get("resource_type") for x in built["resource_manifest"]["references"]])
 
 
-class PauseResumeLeaseTests(unittest.IsolatedAsyncioTestCase):
+class PauseResumeLeaseTests(IsolatedDataMixin, unittest.IsolatedAsyncioTestCase):
     async def test_pause_resume_does_not_create_duplicate_job(self):
         import asyncio
         from .film_scene_state_store import create_run, update_run
@@ -763,7 +768,7 @@ class PauseResumeLeaseTests(unittest.IsolatedAsyncioTestCase):
             delete_film_project(pid)
 
 
-class LiveGateSnapshotTests(unittest.TestCase):
+class LiveGateSnapshotTests(IsolatedDataTestCase):
     def test_live_gate_does_not_use_stale_run_snapshot(self):
         from .film_scene_state_store import create_run, update_run
         init_db()

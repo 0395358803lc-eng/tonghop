@@ -5,6 +5,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from .config import DATA_DIR
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_audio_qc import evaluate_audio_qc
 from .film_audio_schema import normalize_dialogue_line, speech_required
@@ -106,7 +107,7 @@ class DialogueSchemaTests(unittest.TestCase):
         self.assertNotIn("speech", result["qc"].get("incomplete_dimensions") or [])
 
 
-class VoiceProfileTests(unittest.TestCase):
+class VoiceProfileTests(IsolatedDataTestCase):
     def test_voice_profile_persists(self):
         init_db()
         project = create_film_project(
@@ -155,7 +156,7 @@ class VoiceProfileTests(unittest.TestCase):
             delete_film_project(pid)
 
 
-class JunctionQcTests(unittest.TestCase):
+class JunctionQcTests(IsolatedDataTestCase):
     def test_junction_pass(self):
         called = []
         prev = {"id": "SCENE_001", "characters": ["CHAR_001"], "location_id": "LOC_001", "props_present": ["PROP_001"]}

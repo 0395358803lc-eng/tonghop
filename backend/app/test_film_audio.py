@@ -1,5 +1,6 @@
 import unittest
 
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_audio_qc import evaluate_audio_qc
 from .film_audio_schema import normalize_audio_requirements, normalize_dialogue_line, speech_required
@@ -9,7 +10,7 @@ from .film_store import create_film_project, delete_film_project
 from .film_voice_profile_store import get_voice_profile, upsert_voice_profile
 
 
-class AudioContractTests(unittest.TestCase):
+class AudioContractTests(IsolatedDataTestCase):
     def test_dialogue_maps_to_character_id(self):
         project = {"characters": [{"id": "CHAR_001", "name": "An"}]}
         mapped = normalize_dialogue_line({"character_id": "CHAR_001", "text": "Xin chao"}, project)

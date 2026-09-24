@@ -117,14 +117,13 @@ jobs:
 
       - name: Run regression suite
         shell: pwsh
+        # Step-scoped so the packaged-app smoke steps later in this job keep their own
+        # database reachable: the product must be able to open its store.
+        env:
+          TH_MEDIA_REQUIRE_DB_ISOLATION: "1"
         run: |
-          Set-Location backend
-          $mods = @()
-          $mods += Get-ChildItem 'app\test_*.py' | ForEach-Object { 'app.' + $_.BaseName }
-          $mods += Get-ChildItem 'flow_bridge\test_*.py' | ForEach-Object { 'flow_bridge.' + $_.BaseName }
-          python -m unittest $mods
-          if ($LASTEXITCODE -ne 0) { throw "Backend/Flow regression failed with exit code $LASTEXITCODE" }
-          Set-Location ..
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\backend_test_gate.ps1'
+          if ($LASTEXITCODE -ne 0) { throw "Backend/Flow isolation gate failed with exit code $LASTEXITCODE" }
           npm --prefix frontend run build
           if ($LASTEXITCODE -ne 0) { throw "Frontend build failed with exit code $LASTEXITCODE" }
           npm --prefix frontend run lint

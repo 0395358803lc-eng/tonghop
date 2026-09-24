@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from .config import DATA_DIR
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .db import connect
 from .film_media_service import apply_selection_to_pipeline, delete_project_media_files, make_thumbnail, select_production_media
@@ -22,9 +23,10 @@ from .film_resource_store import get_project_resource
 from .film_store import create_film_project, delete_film_project
 
 
-class FilmMediaFoundationTests(unittest.TestCase):
+class FilmMediaFoundationTests(IsolatedDataTestCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         init_db()
         cls.project = create_film_project(
             "__media_viewer_test__",
@@ -44,6 +46,7 @@ class FilmMediaFoundationTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         delete_film_project(cls.project["id"])
+        super().tearDownClass()
 
     def test_path_validation_blocks_escape(self):
         validate_media_path(self.image_v1)

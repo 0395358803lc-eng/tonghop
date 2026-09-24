@@ -85,12 +85,16 @@ jobs:
 
       - name: Backend and Flow tests
         shell: pwsh
+        # Step-scoped on purpose: a job-level setting would leak into the packaged-app
+        # smoke steps, where the product must be allowed to open its own database.
+        env:
+          TH_MEDIA_REQUIRE_DB_ISOLATION: "1"
         run: |
-          Set-Location backend
-          $mods = @()
-          $mods += Get-ChildItem 'app\test_*.py' | ForEach-Object { 'app.' + $_.BaseName }
-          $mods += Get-ChildItem 'flow_bridge\test_*.py' | ForEach-Object { 'flow_bridge.' + $_.BaseName }
-          python -m unittest $mods
+          # The gate discovers the same module list as before, runs it with the DB isolation
+          # tripwire on, then proves no real store moved: a suite that rewrote the acceptance
+          # database would otherwise look green here.
+          powershell -NoProfile -ExecutionPolicy Bypass -File 'desktop\scripts\backend_test_gate.ps1'
+          if ($LASTEXITCODE -ne 0) { throw "Backend/Flow isolation gate failed with exit code $LASTEXITCODE" }
 
       - name: Frontend build and lint
         shell: pwsh

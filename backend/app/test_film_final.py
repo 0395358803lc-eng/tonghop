@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from .config import DATA_DIR
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_boundary_store import upsert_junction
 from .film_final_assembly import assemble_project, evaluate_assembly_gate, _ffmpeg
@@ -28,7 +29,7 @@ def _clip(path: Path, color: str) -> None:
         raise RuntimeError(proc.stderr[-400:])
 
 
-class FinalAssemblyTests(unittest.TestCase):
+class FinalAssemblyTests(IsolatedDataTestCase):
     def setUp(self):
         init_db()
         self.project = create_film_project(

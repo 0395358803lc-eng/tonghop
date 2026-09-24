@@ -5,6 +5,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from .config import DATA_DIR
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_boundary_qc import evaluate_junction_qc, junction_repair_target, selected_media_usable
 from .film_boundary_service import check_junction, check_junction_async, recover_stale_junctions_after_snapshot_rebase, recheck_junctions_for_scene, recheck_junctions_for_scene_async, refresh_junction_staleness, retry_junction
@@ -33,7 +34,7 @@ def _pass_obs():
     return {name: {"score": 96, "passed": True, "evidence": "match"} for name in names}
 
 
-class JunctionVisionTests(unittest.TestCase):
+class JunctionVisionTests(IsolatedDataTestCase):
     def setUp(self):
         init_db()
         self.folder = DATA_DIR / "generated_media" / "_junction_tests"
@@ -467,7 +468,7 @@ class JunctionVisionTests(unittest.TestCase):
         mark.assert_called_once()
         self.assertEqual(mark.call_args.args[3], "PASS")
 
-class JunctionAsyncVisionTests(unittest.IsolatedAsyncioTestCase):
+class JunctionAsyncVisionTests(IsolatedDataMixin, unittest.IsolatedAsyncioTestCase):
 
     async def test_check_junction_async_awaits_vision_inside_running_loop(self):
         project = create_film_project(

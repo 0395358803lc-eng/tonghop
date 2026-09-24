@@ -4,6 +4,7 @@ import unittest
 
 from PIL import Image
 
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_resource_store import (
     get_project_resource,
@@ -14,9 +15,10 @@ from .film_resource_store import (
 from .film_store import create_film_project, delete_film_project, save_film_bible
 
 
-class FilmResourceCacheTests(unittest.TestCase):
+class FilmResourceCacheTests(IsolatedDataTestCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         init_db()
 
     def setUp(self):

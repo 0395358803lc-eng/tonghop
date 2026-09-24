@@ -1,5 +1,6 @@
 import unittest
 
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .desktop_shutdown import (
     prepare_force_shutdown,
@@ -14,9 +15,10 @@ from .film_scene_state_store import (
 from .film_store import create_film_project, delete_film_project
 
 
-class DesktopShutdownTests(unittest.TestCase):
+class DesktopShutdownTests(IsolatedDataTestCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         init_db()
 
     def setUp(self):

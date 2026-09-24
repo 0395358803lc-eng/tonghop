@@ -4,10 +4,11 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from .data_isolation import IsolatedDataTestCase
 from .main import app
 
 
-class DesktopNetworkMiddlewareTests(unittest.TestCase):
+class DesktopNetworkMiddlewareTests(IsolatedDataTestCase):
     def test_offline_keeps_local_api_but_blocks_remote_api(self):
         with patch.dict(os.environ, {"TH_MEDIA_NETWORK_FORCE": "offline"}):
             with TestClient(app) as client:

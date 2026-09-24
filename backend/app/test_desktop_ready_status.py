@@ -4,10 +4,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from .data_isolation import IsolatedDataTestCase
 from . import api
 
 
-class DesktopReadyStatusTests(unittest.TestCase):
+class DesktopReadyStatusTests(IsolatedDataTestCase):
     def test_ready_includes_desktop_runtime_and_storage_summary(self):
         with (
             patch.dict(os.environ, {"TH_MEDIA_DESKTOP_MODE": "1", "TH_MEDIA_FLOW_BRIDGE_PORT": "8765"}, clear=False),

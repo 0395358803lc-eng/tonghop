@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_speaker_identity import (
     SPEAKER_THRESHOLD,
@@ -16,9 +17,10 @@ from .film_store import create_film_project, delete_film_project, save_film_bibl
 from .film_voice_profile_store import get_voice_profile
 
 
-class SpeakerIdentityTests(unittest.TestCase):
+class SpeakerIdentityTests(IsolatedDataTestCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         init_db()
 
     def setUp(self):

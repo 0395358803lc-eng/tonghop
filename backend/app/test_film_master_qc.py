@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from .config import DATA_DIR
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import connect, init_db
 from .film_acceptance_snapshot import mark_final_stale
 from .film_boundary_store import upsert_junction
@@ -43,7 +44,7 @@ def _clip(path: Path, color: str, audio: str = "sine") -> None:
         raise RuntimeError((proc.stderr or "")[-400:])
 
 
-class MasterQcTests(unittest.TestCase):
+class MasterQcTests(IsolatedDataTestCase):
     def setUp(self):
         init_db()
         self.project = create_film_project(

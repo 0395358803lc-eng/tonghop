@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from .config import DATA_DIR
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_acceptance_snapshot import (
     backfill_acceptance_snapshots,
@@ -34,7 +35,7 @@ def _tiny_mp4(path: Path):
     return path
 
 
-class SnapshotTests(unittest.TestCase):
+class SnapshotTests(IsolatedDataTestCase):
     def setUp(self):
         init_db()
         self.project = create_film_project(

@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from .data_isolation import IsolatedDataMixin, IsolatedDataTestCase
 from .db import init_db
 from .film_acceptance_snapshot import _voice_ids_for_scene
 from .film_audio_schema import normalize_audio_requirements
@@ -11,9 +12,10 @@ from .film_store import create_film_project, delete_film_project
 from .film_voice_profile_store import ensure_voice_profiles, get_voice_profile
 
 
-class VoiceContractTests(unittest.TestCase):
+class VoiceContractTests(IsolatedDataTestCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         init_db()
 
     def test_voiceover_is_always_a_narrator_lane(self):
