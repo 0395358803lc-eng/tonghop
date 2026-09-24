@@ -38,7 +38,7 @@ function Resolve-Tool([string]$Name, [string]$EnvName) {
                     Sort-Object LastWriteTime -Descending |
                     Select-Object -First 1
                 if ($actual) {
-                    Write-Output "Resolved Chocolatey $Name shim to $($actual.FullName)"
+                    Write-Host "Resolved Chocolatey $Name shim to $($actual.FullName)"
                     return $actual.FullName
                 }
             }
