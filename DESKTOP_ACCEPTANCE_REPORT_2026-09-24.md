@@ -2,6 +2,13 @@
 Date: 2026-09-24
 Project: C:\Users\Admin\Desktop\tonghop-main\tonghop-main
 
+> SUPERSEDED for release status by `RELEASE_EVIDENCE_0.1.2_2026-09-24.md`.
+> P2.34 (restart) and P2.35 (update A -> B) below are NOT reproducible from this
+> repository: their measurement helpers lived in gitignored `desktop/.build/`,
+> were never tracked, and are gone. They must be re-run with the rebuilt helpers
+> in `desktop/scripts/acceptance/` before being counted again. 0.1.1 never
+> finished a Windows Full Release and no GitHub Release existed for it.
+
 ## Executive status
 Release candidate source is technically clean and production installer 0.1.0 builds successfully.
 All automated regression, restart, update, performance, security and uninstall acceptance items executed on the current Windows server pass.
