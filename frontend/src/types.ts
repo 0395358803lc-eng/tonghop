@@ -348,6 +348,35 @@ export type FilmProviderResource = {
   updated_at: string
 }
 
+export type FilmCanonicalRun = {
+  id: string
+  project_id: string
+  status: 'queued' | 'running' | 'stopping' | 'stopped' | 'completed' | 'failed_partial' | 'failed' | string
+  provider?: string
+  model?: string
+  requested?: number
+  completed?: number
+  failed?: number
+  current_resource_type?: string | null
+  current_entity_id?: string | null
+  stop_requested?: boolean
+  error?: string | null
+  created_at?: string | null
+  started_at?: string | null
+  updated_at?: string | null
+  finished_at?: string | null
+}
+
+export type FilmCanonicalGenerationStatus = {
+  project_id: string
+  run?: FilmCanonicalRun | null
+  active: boolean
+  counts: { total: number; completed: number; failed: number; stopped: number; running: number; with_file: number; qc_failed: number }
+  by_type: Record<string, { total: number; completed: number; failed: number; running: number; with_file: number }>
+  resources: FilmProviderResource[]
+  events?: FilmPipelineEvent[]
+}
+
 export type FilmRenderStatus = {
   adapter: { id: string; name: string; configured: boolean; supports_reference_frame: boolean; contract?: string | null }
   qc_adapter: { id: string; name: string; configured: boolean; min_score: number; contract?: string | null }
@@ -664,23 +693,26 @@ export type FilmSpeakerAcceptanceItem = {
   error?: string | null
 }
 
+export type FilmSpeakerCalibrationReport = {
+  status?: string | null
+  character_status?: string | null
+  narrator_status?: string | null
+  model?: string | null
+  embedding_strategy?: string | null
+  threshold?: number | null
+  positive_min?: number | null
+  negative_max?: number | null
+  gap?: number | null
+  sample_count?: number
+  speaker_count?: number
+  speaker_calibrations?: Record<string, FilmSpeakerCalibration>
+  skipped?: Array<Record<string, unknown>>
+  updated_at?: string | null
+}
+
 export type FilmSpeakerAcceptance = {
   project_id: string
-  calibration?: {
-    status?: string | null
-    character_status?: string | null
-    narrator_status?: string | null
-    model?: string | null
-    embedding_strategy?: string | null
-    threshold?: number | null
-    positive_min?: number | null
-    negative_max?: number | null
-    gap?: number | null
-    sample_count?: number
-    speaker_count?: number
-    speaker_calibrations?: Record<string, FilmSpeakerCalibration>
-    skipped?: Array<Record<string, unknown>>
-  }
+  calibration?: FilmSpeakerCalibrationReport
   speech_scenes: number
   enrolled_references: number
   verified_scenes: number
@@ -689,8 +721,60 @@ export type FilmSpeakerAcceptance = {
   min_similarity?: number | null
   max_similarity?: number | null
   average_similarity?: number | null
+  fully_verified?: boolean
   passed: boolean
   items: FilmSpeakerAcceptanceItem[]
+}
+
+export type FilmNarratorPreviewScene = {
+  scene_id: string
+  base_media_id?: string | null
+  output_path?: string | null
+  video_stream_unchanged?: boolean
+  tts_duration?: number | null
+  target_speech_duration?: number | null
+  atempo_factor?: number | null
+  new_stt?: { passed?: boolean; match_score?: number | null; transcript?: string | null }
+  audio_metrics?: { non_silent?: boolean; [key: string]: unknown }
+  [key: string]: unknown
+}
+
+export type FilmNarratorUpgradePreview = {
+  version: string
+  project_id: string
+  provider: string
+  model: string
+  voice_id: string
+  scene_count: number
+  same_voice_pairs: Array<{ scene_a: string; scene_b: string; similarity: number }>
+  min_same_voice_similarity?: number | null
+  required_similarity: number
+  ready: boolean
+  scenes: FilmNarratorPreviewScene[]
+}
+
+export type FilmNarratorUpgradeResult = {
+  version: string
+  project_id: string
+  voice_id: string
+  provider: string
+  model: string
+  preview: {
+    ready?: boolean
+    min_same_voice_similarity?: number | null
+    required_similarity?: number | null
+  }
+  speaker_acceptance: FilmSpeakerAcceptance
+  upgraded_scenes: Array<{
+    scene_id: string
+    media_id?: string | null
+    media_version?: number | null
+    speaker_status?: string | null
+    speaker_similarity?: number | null
+    snapshot_id?: string | null
+  }>
+  junctions: FilmJunction[]
+  final: FilmFinalStatus
 }
 
 export type FilmJunction = {

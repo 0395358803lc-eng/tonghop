@@ -40,6 +40,10 @@ export async function setDesktopMediaDirectory(path: string): Promise<string> {
   return invoke<string>('set_media_directory', { path })
 }
 
+export async function openProjectCanonicalFolder(projectId: string): Promise<string> {
+  return invoke<string>('open_project_canonical_folder', { projectId })
+}
+
 export async function ensureDesktopFlowRuntime(): Promise<void> {
   try {
     await invoke('ensure_flow_runtime')

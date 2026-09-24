@@ -2,6 +2,8 @@ import type {
   Chat,
   DesktopReadyStatus,
   FilmConsistencyReport,
+  FilmCanonicalGenerationStatus,
+  FilmCanonicalRun,
   FilmGeneratedMedia,
   FilmMediaList,
   FilmMediaVersions,
@@ -11,7 +13,10 @@ import type {
   FilmPipelineGate,
   FilmVoiceProfile,
   FilmSpeakerAcceptance,
+  FilmSpeakerCalibrationReport,
   FilmSpeakerStatus,
+  FilmNarratorUpgradePreview,
+  FilmNarratorUpgradeResult,
   FilmAcceptanceSnapshot,
   FilmCapabilityMatrix,
   FilmFinalStatus,
@@ -57,6 +62,48 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     throw new Error(payload.detail || 'Yêu cầu thất bại')
   }
   return response.json()
+}
+
+async function streamCanonicalEvents(
+  projectId: string,
+  onEvent: (event: FilmPipelineEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const runtime = getRuntimeConfig()
+  const response = await fetch(resolveApiUrl(`/api/film/projects/${projectId}/resources/generation/events`), {
+    headers: {
+      Accept: 'text/event-stream',
+      ...(runtime.authToken ? { 'X-TH-Media-Token': runtime.authToken } : {}),
+    },
+    signal,
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(payload.detail || 'Không mở được log realtime ảnh chuẩn')
+  }
+  if (!response.body) throw new Error('Trình duyệt không hỗ trợ stream log realtime')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let boundary = buffer.indexOf('\n\n')
+    while (boundary >= 0) {
+      const block = buffer.slice(0, boundary).replace(/\r/g, '')
+      buffer = buffer.slice(boundary + 2)
+      const data = block.split('\n')
+        .filter(line => line.startsWith('data:'))
+        .map(line => line.slice(5).trimStart())
+        .join('\n')
+      if (data && data !== '{}') {
+        try { onEvent(JSON.parse(data) as FilmPipelineEvent) } catch { /* ignore malformed event */ }
+      }
+      boundary = buffer.indexOf('\n\n')
+    }
+  }
 }
 
 export const api = {
@@ -132,9 +179,12 @@ export const api = {
   filmRenderStatus: (id: string) => request<FilmRenderStatus>(`/api/film/projects/${id}/render`),
   filmResources: (id: string) => request<{ provider: string; resources: FilmProviderResource[] }>(`/api/film/projects/${id}/resources`),
   syncFilmResources: (id: string) => request<{ provider: string; resources: FilmProviderResource[] }>(`/api/film/projects/${id}/resources/sync`, { method: 'POST' }),
-  generateFilmResources: (id: string, resource_type?: string, entity_ids?: string[], provider?: 'xkiro' | 'flow', model?: string) => request<{ accepted: number; provider: string; model: string; resources: FilmProviderResource[] }>(`/api/film/projects/${id}/resources/generate`, {
+  generateFilmResources: (id: string, resource_type?: string, entity_ids?: string[], provider?: 'xkiro' | 'flow', model?: string) => request<{ accepted: number; provider: string; model: string; run?: FilmCanonicalRun | null; resources: FilmProviderResource[] }>(`/api/film/projects/${id}/resources/generate`, {
     method: 'POST', body: JSON.stringify({ resource_type: resource_type || null, entity_ids: entity_ids?.length ? entity_ids : null, provider: provider || null, model: model || null }),
   }),
+  canonicalGenerationStatus: (id: string) => request<FilmCanonicalGenerationStatus>(`/api/film/projects/${id}/resources/generation/status`),
+  streamCanonicalGenerationEvents: (id: string, onEvent: (event: FilmPipelineEvent) => void, signal?: AbortSignal) => streamCanonicalEvents(id, onEvent, signal),
+  stopCanonicalGeneration: (id: string) => request<{ requested: boolean; reason?: string; run?: FilmCanonicalRun | null; status: FilmCanonicalGenerationStatus }>(`/api/film/projects/${id}/resources/generation/stop`, { method: 'POST' }),
   qcFilmResources: (id: string, resource_type?: string, entity_ids?: string[], auto_repair = false, repair_provider: 'xkiro' | 'flow' = 'flow', repair_model?: string) => request<{ accepted: boolean; auto_repair: boolean; repair_provider: string; repair_model: string; resources: FilmProviderResource[] }>(`/api/film/projects/${id}/resources/qc`, {
     method: 'POST', body: JSON.stringify({ resource_type: resource_type || null, entity_ids: entity_ids?.length ? entity_ids : null, auto_repair, repair_provider, repair_model: repair_model || null }),
   }),
@@ -161,7 +211,14 @@ export const api = {
   filmAudioRequirements: (id: string) => request<{ project_id: string; scenes: FilmAudioRequirements[]; speech_required_count: number }>(`/api/film/projects/${id}/audio/requirements`),
   filmVoiceProfiles: (id: string) => request<{ project_id: string; profiles: FilmVoiceProfile[] }>(`/api/film/projects/${id}/voice-profiles`),
   filmSpeakerStatus: () => request<FilmSpeakerStatus>('/api/film/speaker/status'),
+  filmSpeakerCalibration: (id: string) => request<{ project_id: string; calibration: FilmSpeakerCalibrationReport }>(`/api/film/projects/${id}/speaker/calibration`),
   runFilmSpeakerAcceptance: (id: string) => request<FilmSpeakerAcceptance>(`/api/film/projects/${id}/speaker/acceptance`, { method: 'POST' }),
+  previewFilmNarratorUpgrade: (id: string, voice_id: string, speed = 1) => request<FilmNarratorUpgradePreview>(`/api/film/projects/${id}/narrator/preview`, {
+    method: 'POST', body: JSON.stringify({ voice_id, speed }),
+  }),
+  applyFilmNarratorUpgrade: (id: string, voice_id: string, speed = 1) => request<FilmNarratorUpgradeResult>(`/api/film/projects/${id}/narrator/apply`, {
+    method: 'POST', body: JSON.stringify({ voice_id, speed }),
+  }),
   filmJunctions: (id: string) => request<{ project_id: string; junctions: FilmJunction[]; counts: Record<string, number> }>(`/api/film/projects/${id}/junctions`),
   checkFilmJunctions: (id: string) => request<{ project_id: string; junctions: FilmJunction[] }>(`/api/film/projects/${id}/junctions/check`, { method: 'POST' }),
   retryFilmJunction: (id: string, junctionId: string) => request<FilmJunction>(`/api/film/projects/${id}/junctions/${encodeURIComponent(junctionId)}/retry`, { method: 'POST' }),

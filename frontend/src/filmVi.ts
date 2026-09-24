@@ -127,6 +127,32 @@ const ERROR_CODES: Record<string, string> = {
   BIBLE_ASSET_MISSING: 'Thiếu tài nguyên tham chiếu bắt buộc từ dữ liệu chuẩn.',
   RESOURCE_LOCK_INCOMPLETE: 'Thiếu ảnh canonical bắt buộc để khóa nhân vật, bối cảnh hoặc đạo cụ.',
   CANONICAL_ASSET_LOCKED: 'Tài nguyên hình ảnh chuẩn đã khóa và không thể thay đổi trong lúc sản xuất.',
+  CANONICAL_QC_FAILED: 'Ảnh chuẩn không vượt qua Canonical Vision QC sau các lần thử cho phép.',
+  CANONICAL_BATCH_BLOCKED: 'Đã dừng các ảnh còn lại vì lỗi phụ thuộc Google Flow ảnh hưởng toàn bộ batch.',
+  CANONICAL_RUN_INTERRUPTED: 'Tiến trình tạo ảnh chuẩn trước đã bị gián đoạn; trạng thái đã được khôi phục an toàn.',
+  SESSION_EXPIRED: 'Phiên Google Flow đã hết hoặc mất đăng nhập. Hãy đăng nhập lại Flow rồi thử lại các ảnh lỗi.',
+  REAUTH_REQUIRED: 'Google Flow yêu cầu xác thực lại tài khoản trước khi tiếp tục.',
+  BRIDGE_AUTH_ERROR: 'Cầu nối Google Flow không xác thực được. Hãy kiểm tra phiên/cấu hình bridge.',
+  PROJECT_NOT_FOUND: 'Không tìm thấy dự án Google Flow đã lưu.',
+  FLOW_PROJECT_NOT_FOUND: 'Dự án Google Flow không còn truy cập được hoặc URL dự án không hợp lệ.',
+  FLOW_UI_CHANGED: 'Giao diện Google Flow đã thay đổi nên bộ tự động hóa không tìm thấy thành phần cần thiết.',
+  FLOW_NAVIGATION_LOST: 'Google Flow đã rời khỏi trang dự án trong lúc xử lý.',
+  FLOW_GENERATE_BUTTON_NOT_FOUND: 'Không tìm thấy nút Generate của Google Flow sau khi trang tải xong.',
+  CAPABILITY_MISMATCH: 'Model hoặc cấu hình yêu cầu không phù hợp khả năng hiện tại của Google Flow.',
+  FLOW_CREDITS_INSUFFICIENT: 'Tài khoản Google Flow không còn đủ credit cho thao tác này.',
+  FLOW_POLICY_BLOCKED: 'Google Flow từ chối yêu cầu theo chính sách của nhà cung cấp.',
+  IMAGE_GENERATION_TIMEOUT: 'Quá thời gian chờ nhà cung cấp tạo ảnh.',
+  IMAGE_CREATE_HTTP_: 'Nhà cung cấp ảnh trả lỗi HTTP khi bắt đầu tạo ảnh.',
+  NARRATOR_TTS_PROVIDER_NOT_CONFIGURED: 'Chưa cấu hình nhà cung cấp TTS narrator.',
+  NARRATOR_SCENES_MISSING: 'Dự án không có scene chỉ dùng narrator để tạo preview giọng.',
+  NARRATOR_TTS_PREVIEW_NOT_READY: 'Preview narrator chưa đạt nên chưa thể khóa giọng.',
+  NARRATOR_TTS_PIPELINE_ACTIVE: 'Pipeline đang chạy. Hãy dừng hoặc chờ pipeline trước khi thay narrator.',
+  NARRATOR_TTS_EXECUTION_LEASE_ACTIVE: 'Dự án đang có execution lease hoạt động; chưa thể thay narrator.',
+  NARRATOR_TTS_SPEAKER_ACCEPTANCE_FAILED: 'Giọng narrator cố định chưa vượt qua speaker acceptance.',
+  NARRATOR_BASE_STT_NOT_VERIFIED: 'Âm thanh narrator gốc chưa được STT xác minh nên không thể thay an toàn.',
+  NARRATOR_TTS_STT_FAILED: 'Narrator mới không vượt qua kiểm tra STT sau khi ghép.',
+  NARRATOR_TTS_AUDIO_INVALID: 'Audio narrator mới không hợp lệ hoặc bị im lặng.',
+  NARRATOR_TTS_FINAL_NOT_APPROVED: 'Sau khi thay narrator, bản final chưa đạt trạng thái APPROVED.',
   CONTINUITY_REFERENCE_PENDING: 'Đang chờ cảnh trước đạt kiểm tra chất lượng và có khung hình cuối hợp lệ.',
   QC_FAILED: 'Video không vượt qua kiểm tra chất lượng hình ảnh bắt buộc.',
   QC_ERROR: 'Không thể hoàn tất kiểm tra chất lượng; pipeline đã dừng để tránh dùng video chưa kiểm định.',
@@ -328,6 +354,30 @@ export function pipelineStatusVi(value?: string | null) {
   return PIPELINE_STATUS[key] || PIPELINE_STATUS[key.toUpperCase()] || key || 'Chưa chạy'
 }
 
+const CANONICAL_STAGE: Record<string, string> = {
+  queued: 'Đang xếp hàng',
+  starting: 'Đang bắt đầu',
+  opening_flow_project: 'Đang mở project Google Flow',
+  awaiting_generation: 'Google Flow đang tạo ảnh',
+  downloading_result: 'Đang tải ảnh kết quả',
+  downloaded: 'Đã tải ảnh · chờ QC',
+  qc_running: 'Vision QC đang kiểm tra',
+  regenerating: 'Đang tạo lại theo QC',
+  succeeded: 'Hoàn tất',
+  failed: 'Thất bại',
+  blocked: 'Bị chặn bởi lỗi Flow',
+  stopped: 'Đã dừng',
+  stopping: 'Đang dừng',
+  completed: 'Hoàn tất',
+  failed_partial: 'Hoàn tất một phần · còn lỗi',
+  idle: 'Chưa chạy',
+}
+
+export function canonicalStageVi(value?: string | null) {
+  const key = String(value || '').toLowerCase()
+  return CANONICAL_STAGE[key] || String(value || 'Chưa chạy')
+}
+
 const QC_DIMENSIONS: Record<string, string> = {
   identity: 'Nhận diện nhân vật',
   wardrobe: 'Trang phục',
@@ -439,6 +489,22 @@ const EVENT_TYPES: Record<string, string> = {
   RECOVERY_RECONCILED: 'Recovery',
   CAPABILITY_REFRESHED: 'Capability refresh',
   CAPABILITY_BLOCKED: 'Capability chặn',
+  CANONICAL_RUN_QUEUED: 'Ảnh chuẩn · đã xếp hàng',
+  CANONICAL_RUN_STARTED: 'Ảnh chuẩn · bắt đầu',
+  CANONICAL_RUN_STOP_REQUESTED: 'Ảnh chuẩn · yêu cầu dừng',
+  CANONICAL_RUN_STOPPED: 'Ảnh chuẩn · đã dừng',
+  CANONICAL_RUN_COMPLETED: 'Ảnh chuẩn · hoàn tất',
+  CANONICAL_RUN_FAILED: 'Ảnh chuẩn · có lỗi',
+  CANONICAL_RESOURCE_QUEUED: 'Tài nguyên · xếp hàng',
+  CANONICAL_RESOURCE_STARTED: 'Tài nguyên · bắt đầu',
+  CANONICAL_RESOURCE_PROGRESS: 'Tài nguyên · tiến trình',
+  CANONICAL_RESOURCE_DOWNLOADED: 'Tài nguyên · đã tải ảnh',
+  CANONICAL_RESOURCE_QC_STARTED: 'Tài nguyên · bắt đầu QC',
+  CANONICAL_RESOURCE_QC_PASSED: 'Tài nguyên · QC đạt',
+  CANONICAL_RESOURCE_QC_FAILED: 'Tài nguyên · QC chưa đạt',
+  CANONICAL_RESOURCE_COMPLETED: 'Tài nguyên · hoàn tất',
+  CANONICAL_RESOURCE_FAILED: 'Tài nguyên · lỗi',
+  CANONICAL_RESOURCE_STOPPED: 'Tài nguyên · đã dừng',
 }
 
 export function eventTypeVi(value?: string | null) {
@@ -449,6 +515,17 @@ export function eventTypeVi(value?: string | null) {
 export function uiErrorVi(message?: string | null) {
   const text = String(message || '')
   if (!text) return ''
+  const leading = text.match(/^([A-Z][A-Z0-9_]+):\s*/)?.[1]
+  if (leading && (ERROR_CODES[leading] || Object.keys(ERROR_CODES).some(key => leading.startsWith(key)))) {
+    if (leading === 'CANONICAL_BATCH_BLOCKED') {
+      const nestedText = text.replace(/^CANONICAL_BATCH_BLOCKED:\s*/, '')
+      const nested = nestedText.match(/^([A-Z][A-Z0-9_]+):\s*/)?.[1]
+      return nested && ERROR_CODES[nested]
+        ? `${errorCodeVi(leading)} ${errorCodeVi(nested)}`
+        : errorCodeVi(leading)
+    }
+    return errorCodeVi(leading)
+  }
   const code = Object.keys(ERROR_CODES).find(key => text.includes(key))
   if (code) return errorCodeVi(code)
   return text

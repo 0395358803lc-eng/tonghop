@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, ChevronUp, Clapperboard, Download, Film, Loader2, LockKeyhole, MapPin, Pause, Play, Plus, RotateCcw, Save, Sparkles, Trash2, WandSparkles } from 'lucide-react'
+import { AlertTriangle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, ChevronUp, Clapperboard, Download, FileJson, Film, FolderOpen, Loader2, LockKeyhole, MapPin, Pause, Play, Plus, RotateCcw, Save, Sparkles, Trash2, WandSparkles } from 'lucide-react'
 import { api } from './api'
 import FilmContinuityControlCenter from './FilmContinuityControlCenter'
 import FilmMediaGallery from './FilmMediaGallery'
 import FilmSceneMedia from './FilmSceneMedia'
 import { notifyDesktop, onDesktopNotificationAction } from './desktopNotifications'
-import type { DesktopSettings } from './desktopSettings'
-import { adapterNameVi, errorCodeVi, FILM_STYLE_OPTIONS, filmStatusVi, jsonTextVi, qcStatusVi, renderStatusVi, stageVi, styleLabelVi, uiErrorVi } from './filmVi'
-import type { FilmFinalStatus, FilmGeneratedMedia, FilmPipelineStatus, FilmProject, FilmProjectSummary, FilmProviderResource, FilmRenderJob, FilmRenderStatus, FilmScene, FilmSettings, FlowImageCapabilities, FlowProject, FlowVideoCapabilities, Provider } from './types'
+import { openProjectCanonicalFolder, type DesktopSettings } from './desktopSettings'
+import { adapterNameVi, canonicalStageVi, errorCodeVi, eventTypeVi, FILM_STYLE_OPTIONS, filmStatusVi, jsonTextVi, qcStatusVi, renderStatusVi, stageVi, styleLabelVi, uiErrorVi } from './filmVi'
+import type { FilmCanonicalGenerationStatus, FilmFinalStatus, FilmGeneratedMedia, FilmPipelineEvent, FilmPipelineStatus, FilmProject, FilmProjectSummary, FilmProviderResource, FilmRenderJob, FilmRenderStatus, FilmScene, FilmSettings, FlowImageCapabilities, FlowProject, FlowVideoCapabilities, Provider } from './types'
 
 type Props = {
   providerId: string
@@ -105,6 +105,9 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   const [pipelineState, setPipelineState] = useState<FilmPipelineStatus | null>(null)
   const [finalState, setFinalState] = useState<FilmFinalStatus | null>(null)
   const [wizardBusy, setWizardBusy] = useState(false)
+  const [canonicalRunState, setCanonicalRunState] = useState<FilmCanonicalGenerationStatus | null>(null)
+  const [canonicalEvents, setCanonicalEvents] = useState<FilmPipelineEvent[]>([])
+  const [canonicalStopping, setCanonicalStopping] = useState(false)
   const notificationProjectRef = useRef('')
   const notificationsReadyRef = useRef(false)
   const lastCanonicalLockedRef = useRef(false)
@@ -129,6 +132,13 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     const data = await api.filmMedia(projectId)
     setMediaItems(data.media || [])
     return data.media || []
+  }, [])
+  const refreshCanonicalRuntime = useCallback(async (projectId: string) => {
+    const status = await api.canonicalGenerationStatus(projectId)
+    setCanonicalRunState(status)
+    setResources(previous => status.resources?.length ? status.resources : previous)
+    setCanonicalEvents(status.events || [])
+    return status
   }, [])
   const refreshWizardProgress = useCallback(async (projectId: string) => {
     const [pipeline, final] = await Promise.all([
@@ -204,10 +214,10 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   }, [refreshFlowProduction, settings.flow_project_id])
 
   useEffect(() => {
-    if (flowAuthenticated !== false) return
+    if (flowAuthenticated !== true) return
     const timer = window.setInterval(() => {
       refreshFlowProduction(settings.flow_project_id).catch(() => undefined)
-    }, 5000)
+    }, 30000)
     return () => window.clearInterval(timer)
   }, [flowAuthenticated, refreshFlowProduction, settings.flow_project_id])
 
@@ -234,14 +244,14 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   }, [activeId, activeStatus, desktopSettings?.notifications_enabled, refreshProjects])
 
   useEffect(() => {
-    if (!activeId || activeStatus !== 'ready') return
+    if (!activeId) return
     const timer = window.setTimeout(() => {
-      void refreshResources(activeId)
+      void refreshCanonicalRuntime(activeId)
       void refreshMedia(activeId)
-      void refreshWizardProgress(activeId)
+      if (activeStatus === 'ready') void refreshWizardProgress(activeId)
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [activeId, activeStatus, refreshMedia, refreshResources, refreshWizardProgress])
+  }, [activeId, activeStatus, refreshCanonicalRuntime, refreshMedia, refreshWizardProgress])
 
   useEffect(() => {
     if (!activeId || activeStatus !== 'ready') return
@@ -260,14 +270,16 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     let cancelled = false
     const sync = async () => {
       try {
-        const [state, resourceData] = await Promise.all([
+        const [state, canonical] = await Promise.all([
           api.filmRenderStatus(activeId),
-          api.filmResources(activeId),
+          api.canonicalGenerationStatus(activeId),
         ])
         if (cancelled) return false
         setRenderState(state)
-        setResources(resourceData.resources || [])
-        const mediaBusy = (resourceData.resources || []).some(item => ['queued', 'generating', 'regenerating'].includes(String(item.metadata?.generation_status || '')) || String(item.metadata?.canonical_qc_status || '') === 'running') || state.jobs.some(job => ['waiting', 'preparing', 'generating'].includes(job.status))
+        setCanonicalRunState(canonical)
+        setCanonicalEvents(canonical.events || [])
+        setResources(previous => canonical.resources?.length ? canonical.resources : previous)
+        const mediaBusy = canonical.active || (canonical.resources || []).some(item => String(item.metadata?.canonical_qc_status || '') === 'running') || state.jobs.some(job => ['waiting', 'preparing', 'generating'].includes(job.status))
         await refreshMedia(activeId)
         if (state.jobs.some(job => ['preparing', 'generating', 'completed', 'failed'].includes(job.status))) {
           const project = await api.filmProject(activeId)
@@ -288,6 +300,34 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     return () => { cancelled = true; if (timer) window.clearTimeout(timer) }
   }, [activeId, activeStatus, refreshMedia, renderBusy, resourceBusy])
 
+  useEffect(() => {
+    if (!activeId || activeStatus !== 'ready' || !canonicalRunState?.active || !canonicalRunState.run?.id) return
+    const controller = new AbortController()
+    let refreshTimer: number | undefined
+    const scheduleRefresh = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer)
+      refreshTimer = window.setTimeout(() => {
+        void refreshCanonicalRuntime(activeId).catch(() => undefined)
+        void refreshMedia(activeId).catch(() => undefined)
+      }, 180)
+    }
+    void api.streamCanonicalGenerationEvents(activeId, event => {
+      setCanonicalEvents(previous => {
+        if (previous.some(item => item.id === event.id)) return previous
+        return [...previous, event].slice(-100)
+      })
+      if (/CANONICAL_(RESOURCE|RUN)_(PROGRESS|DOWNLOADED|QC_STARTED|QC_PASSED|QC_FAILED|COMPLETED|FAILED|STOPPED)$/.test(event.event_type)) {
+        scheduleRefresh()
+      }
+    }, controller.signal).catch(error => {
+      if (!controller.signal.aborted) console.warn('Canonical SSE fallback to polling:', error)
+    })
+    return () => {
+      controller.abort()
+      if (refreshTimer) window.clearTimeout(refreshTimer)
+    }
+  }, [activeId, activeStatus, canonicalRunState?.active, canonicalRunState?.run?.id, refreshCanonicalRuntime, refreshMedia])
+
   const selectedScene = useMemo(
     () => active?.scenes.find(scene => scene.id === activeSceneId) || active?.scenes[0] || null,
     [active, activeSceneId],
@@ -305,7 +345,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   const productionReady = consistencyReady && productionGateReady
   const productionErrors = active?.production_gate?.errors || []
   const visualAssetsRequired = renderState?.adapter.id === 'flow_bridge' || settings.require_provider_assets === true
-  const canonicalGenerating = resources.some(item => ['queued', 'generating', 'regenerating'].includes(String(item.metadata?.generation_status || '')))
+  const canonicalGenerating = canonicalRunState?.active === true || resources.some(item => ['queued', 'starting', 'generating', 'regenerating', 'qc_running', 'stopping'].includes(String(item.metadata?.generation_status || '')))
   const canonicalQcRunning = resources.some(item => String(item.metadata?.canonical_qc_status || '') === 'running')
   const canonicalProviderReady = canonicalProvider === 'xkiro' || flowAuthenticated === true
   const activeCanonicalResources = resources.filter(item => item.status !== 'retired')
@@ -418,7 +458,7 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     }
     for (const resource of resources) {
       const gen = String(resource.metadata?.generation_status || '')
-      if (!['queued', 'generating', 'regenerating'].includes(gen)) continue
+      if (!['queued', 'starting', 'opening_flow_project', 'awaiting_generation', 'downloading_result', 'downloaded', 'generating', 'regenerating', 'qc_running', 'stopping'].includes(gen)) continue
       if (mediaItems.some(item => item.entity_id === resource.entity_id && item.file_url)) continue
       live.push({
         id: `live-res-${resource.id}`,
@@ -440,6 +480,12 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     }
     return [...live, ...mediaItems]
   }, [active, mediaItems, renderState, resources])
+  const canonicalGalleryItems = useMemo(
+    () => galleryItems.filter(item => item.role === 'canonical_image' || (item.role === 'repair_candidate' && !!item.resource_type)),
+    [galleryItems],
+  )
+  const canonicalFailedCount = activeCanonicalResources.filter(item => item.status === 'error' || ['failed', 'blocked'].includes(String(item.metadata?.generation_status || ''))).length
+  const canonicalCounts = canonicalRunState?.counts
 
   const selectedSceneId = selectedScene?.id || ''
   const selectedDialogueText = useMemo(
@@ -477,6 +523,16 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
   const openProject = useCallback(async (id: string) => {
     try {
       const project = await api.filmProject(id)
+      let canonical: FilmCanonicalGenerationStatus | null = null
+      let syncedResources: FilmProviderResource[] = []
+      if (project.status === 'ready') {
+        const synced = await api.syncFilmResources(project.id)
+        syncedResources = synced.resources || []
+      }
+      canonical = await api.canonicalGenerationStatus(project.id)
+      if (!syncedResources.length && canonical.resources?.length) {
+        syncedResources = canonical.resources
+      }
       setActive(project)
       setSettings(project.settings || desktopFilmDefaults(desktopSettings))
       setStory(project.original_text)
@@ -486,10 +542,12 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
       setWizardPipelineStartedProject(null)
       setPipelineState(null)
       setFinalState(null)
-      if (project.status === 'ready') await refreshResources(project.id)
+      setCanonicalRunState(canonical)
+      setResources(canonical?.resources?.length ? canonical.resources : syncedResources)
+      setCanonicalEvents(canonical?.events || [])
       setError('')
     } catch (e) { setError(uiErrorVi((e as Error).message)) }
-  }, [desktopSettings, refreshResources])
+  }, [desktopSettings])
 
   useEffect(() => {
     let disposed = false
@@ -736,6 +794,65 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     URL.revokeObjectURL(href)
   }
 
+  const exportCanonicalDiagnostics = () => {
+    if (!active) return
+    const payload = {
+      schema: 'th-media-canonical-diagnostics-v1',
+      captured_at: new Date().toISOString(),
+      project: { id: active.id, name: active.name, status: active.status, stage: active.stage },
+      run: canonicalRunState?.run || null,
+      active: canonicalRunState?.active || false,
+      counts: canonicalRunState?.counts || null,
+      by_type: canonicalRunState?.by_type || null,
+      resources: activeCanonicalResources.map(item => ({
+        id: item.id,
+        resource_type: item.resource_type,
+        entity_id: item.entity_id,
+        status: item.status,
+        local_path: item.local_path || null,
+        error: item.error || null,
+        generation_status: item.metadata?.generation_status || null,
+        provider_stage: item.metadata?.provider_stage || null,
+        provider_progress: item.metadata?.provider_progress ?? null,
+        provider_error_code: item.metadata?.provider_error_code || null,
+        canonical_qc_status: item.metadata?.canonical_qc_status || null,
+        canonical_qc: item.metadata?.canonical_qc || null,
+        generation_provider: item.metadata?.generation_provider || null,
+        generation_model: item.metadata?.generation_model || item.metadata?.model || null,
+        updated_at: item.updated_at,
+      })),
+      events: canonicalEvents.slice(-100),
+      media: canonicalGalleryItems.map(item => ({
+        id: item.id,
+        role: item.role,
+        status: item.status,
+        provider: item.provider || null,
+        model: item.model || null,
+        file_url: item.file_url || null,
+        qc_status: item.qc_status,
+        qc_score: item.qc_score ?? null,
+        version: item.version,
+        is_selected: item.is_selected,
+      })),
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const href = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = href
+    a.download = `TH_Media_${active.id.slice(0, 8)}_canonical_diagnostics_${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+    a.click()
+    URL.revokeObjectURL(href)
+  }
+
+  const openCanonicalAssetsFolder = async () => {
+    if (!active) return
+    try {
+      await openProjectCanonicalFolder(active.id)
+    } catch (e) {
+      setError(uiErrorVi((e as Error).message))
+    }
+  }
+
   const generateCanonicalAssets = async (resourceType?: FilmProviderResource['resource_type'], entityIds?: string[]) => {
     if (!active || canonicalGenerating) return
     setResourceBusy(resourceType ? `ai-${resourceType}` : 'ai-all')
@@ -743,14 +860,46 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
     try {
       const result = await api.generateFilmResources(active.id, resourceType, entityIds, canonicalProvider, canonicalModel)
       setResources(result.resources || [])
+      await refreshCanonicalRuntime(active.id)
+      await refreshMedia(active.id)
       if (!result.accepted) {
         setError('Không có tài nguyên nào cần AI tạo mới.')
       }
     } catch (e) {
       setError(uiErrorVi((e as Error).message))
+      await refreshCanonicalRuntime(active.id).catch(() => undefined)
     } finally {
       setResourceBusy('')
     }
+  }
+
+  const stopCanonicalAssets = async () => {
+    if (!active || canonicalStopping) return
+    setCanonicalStopping(true)
+    setError('')
+    try {
+      const result = await api.stopCanonicalGeneration(active.id)
+      setCanonicalRunState(result.status)
+      setResources(result.status.resources || [])
+      setCanonicalEvents(result.status.events || [])
+      if (!result.requested) setError('Không có tiến trình tạo ảnh chuẩn nào đang chạy.')
+    } catch (e) {
+      setError(uiErrorVi((e as Error).message))
+    } finally {
+      setCanonicalStopping(false)
+    }
+  }
+
+  const retryFailedCanonicalAssets = async () => {
+    if (!active || canonicalGenerating) return
+    const failedIds = activeCanonicalResources
+      .filter(item => item.status === 'error' || ['failed', 'blocked', 'stopped'].includes(String(item.metadata?.generation_status || '')))
+      .map(item => item.entity_id)
+    if (!failedIds.length) {
+      setError('Không có ảnh lỗi nào cần thử lại.')
+      return
+    }
+    await generateCanonicalAssets(undefined, failedIds)
   }
 
   const qcCanonicalAssets = async (resourceType?: FilmProviderResource['resource_type'], entityIds?: string[], autoRepair = true) => {
@@ -925,6 +1074,9 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
           const qcPassed = hardGate?.passed === true
           const qcScore = typeof qc?.overall_score === 'number' ? Math.round(qc.overall_score as number) : null
           const qcStatus = String(resource.metadata?.canonical_qc_status || (qcPassed ? 'passed' : 'not_checked'))
+          const generationStatus = String(resource.metadata?.generation_status || '')
+          const providerProgressRaw = resource.metadata?.provider_progress
+          const providerProgress = typeof providerProgressRaw === 'number' ? Math.max(0, Math.min(100, Math.round(providerProgressRaw))) : null
           return (
             <div className={`visual-resource-card ${resource.status}`} key={resource.id}>
               <div className="visual-resource-preview">
@@ -932,9 +1084,9 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
               </div>
               <div className="visual-resource-info">
                 <strong>{entityId}</strong>
-                <span>Trạng thái: {resource.status.toUpperCase()}</span>
-                <span className={qcPassed ? 'canonical-qc-pass' : qcStatus === 'failed' || qcStatus === 'error' ? 'canonical-qc-fail' : 'canonical-qc-pending'}>Canonical QC: {qcStatus.toUpperCase()}{qcScore !== null ? ` · ${qcScore}/100` : ''}{qcPassed ? ' ✓' : ''}</span>
-                {!!resource.metadata?.generation_status && <span>AI: {String(resource.metadata.generation_status).toUpperCase()} · {String(resource.metadata.generation_provider || '').toUpperCase()} · {String(resource.metadata.generation_model || resource.metadata.model || '')}</span>}
+                <span>Trạng thái: {renderStatusVi(resource.status)}</span>
+                <span className={qcPassed ? 'canonical-qc-pass' : qcStatus === 'failed' || qcStatus === 'error' ? 'canonical-qc-fail' : 'canonical-qc-pending'}>Canonical QC: {qcStatusVi(qcStatus)}{qcScore !== null ? ` · ${qcScore}/100` : ''}{qcPassed ? ' ✓' : ''}</span>
+                {!!generationStatus && <span>AI: {canonicalStageVi(generationStatus)}{providerProgress !== null ? ` · ${providerProgress}%` : ''} · {String(resource.metadata.generation_provider || '').toUpperCase()} · {String(resource.metadata.generation_model || resource.metadata.model || '')}</span>}
                 <small>{String(entity.name || entity.title || entity.description || '').slice(0, 120)}</small>
                 <div className="visual-resource-row-actions">
                   <button disabled={locked || !canonicalProviderReady || canonicalGenerating || canonicalQcRunning} onClick={() => generateCanonicalAssets(type, [entityId])}><Sparkles size={11} /> {assetUrl ? 'AI tạo lại' : 'AI tạo ảnh'}</button>
@@ -1058,11 +1210,105 @@ export default function FilmStudio({ providerId, model, provider, onOpenSettings
                   <span>Final <b>{finalApproved ? 'ĐẠT' : 'CHƯA XONG'}</b></span>
                 </div>
               </div>
-              <button className="film-wizard-next" disabled={wizardBusy || finalApproved || canonicalGenerating || canonicalQcRunning || (wizardStep === 5 && pipelineState?.worker_active)} onClick={wizardContinue}>
-                {wizardBusy || canonicalGenerating || canonicalQcRunning || (wizardStep === 5 && pipelineState?.worker_active) ? <Loader2 className="spin" size={18} /> : <ArrowRight size={18} />}
-                <span><strong>{finalApproved ? 'Hoàn tất' : 'Tiếp tục'}</strong><em>{wizardActionLabel}</em></span>
-              </button>
+              <div className="film-wizard-actions">
+                <button className="film-wizard-next" disabled={wizardBusy || finalApproved || canonicalGenerating || canonicalQcRunning || (wizardStep === 5 && pipelineState?.worker_active)} onClick={wizardContinue}>
+                  {wizardBusy || canonicalGenerating || canonicalQcRunning || (wizardStep === 5 && pipelineState?.worker_active) ? <Loader2 className="spin" size={18} /> : <ArrowRight size={18} />}
+                  <span><strong>{finalApproved ? 'Hoàn tất' : 'Tiếp tục'}</strong><em>{wizardActionLabel}</em></span>
+                </button>
+                {wizardStep === 3 && (
+                  <div className="film-wizard-run-controls">
+                    <button className="danger" disabled={!canonicalRunState?.active || canonicalStopping} onClick={stopCanonicalAssets}>
+                      {canonicalStopping ? <Loader2 className="spin" size={13} /> : <Pause size={13} />} Dừng
+                    </button>
+                    <button disabled={canonicalGenerating || canonicalFailedCount === 0} onClick={retryFailedCanonicalAssets}>
+                      <RotateCcw size={13} /> Thử lại lỗi ({canonicalFailedCount})
+                    </button>
+                    <button disabled={!active} onClick={async () => { if (active) { await refreshCanonicalRuntime(active.id); await refreshMedia(active.id) } }}>
+                      <RotateCcw size={13} /> Làm mới
+                    </button>
+                    <button disabled={!active} onClick={exportCanonicalDiagnostics}>
+                      <FileJson size={13} /> Xuất log chẩn đoán
+                    </button>
+                    <button disabled={!active} onClick={openCanonicalAssetsFolder}>
+                      <FolderOpen size={13} /> Mở thư mục ảnh chuẩn
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
+            {wizardStep === 3 && (
+              <div className="canonical-live-panel">
+                <div className="canonical-live-summary">
+                  <div><span>TIẾN TRÌNH ẢNH CHUẨN</span><strong>{canonicalStageVi(canonicalRunState?.run?.status || 'idle')}</strong></div>
+                  <span>Đã có ảnh <b>{canonicalCounts?.with_file || canonicalGalleryItems.filter(item => !!item.file_url).length}/{canonicalCounts?.total || activeCanonicalResources.length}</b></span>
+                  <span>QC đạt <b>{canonicalCounts?.completed || 0}</b></span>
+                  <span>Lỗi <b>{canonicalCounts?.failed || 0}</b></span>
+                  <span>Đang chạy <b>{canonicalCounts?.running || 0}</b></span>
+                  {canonicalRunState?.run?.current_entity_id && <span>Hiện tại <b>{canonicalRunState.run.current_entity_id}</b></span>}
+                </div>
+                <div className="canonical-resource-table-wrap">
+                  <div className="canonical-resource-table-head">
+                    <div><span>TRẠNG THÁI TỪNG RESOURCE</span><strong>{activeCanonicalResources.length} tài nguyên chuẩn</strong></div>
+                    <span>Generation · Provider · QC · File · Error</span>
+                  </div>
+                  <div className="canonical-resource-table">
+                    <div className="canonical-resource-row header">
+                      <span>Loại / ID</span><span>Trạng thái</span><span>AI / tiến độ</span><span>QC</span><span>File</span><span>Lỗi</span>
+                    </div>
+                    {activeCanonicalResources.map(resource => {
+                      const generationStatus = String(resource.metadata?.generation_status || '')
+                      const progressRaw = resource.metadata?.provider_progress
+                      const progress = typeof progressRaw === 'number' ? Math.max(0, Math.min(100, Math.round(progressRaw))) : null
+                      const qcStatus = String(resource.metadata?.canonical_qc_status || '')
+                      const errorCode = String(resource.metadata?.provider_error_code || '')
+                      const errorText = uiErrorVi(resource.error || errorCode)
+                      const typeLabel = resource.resource_type === 'character' ? 'Nhân vật' : resource.resource_type === 'location' ? 'Bối cảnh' : 'Đạo cụ'
+                      return (
+                        <div key={resource.id} className={`canonical-resource-row ${resource.status === 'error' || errorText ? 'is-error' : resource.status === 'locked' || resource.status === 'ready' ? 'is-ok' : ''}`}>
+                          <span><b>{typeLabel}</b><em>{resource.entity_id}</em></span>
+                          <span>{renderStatusVi(resource.status)}</span>
+                          <span>{generationStatus ? canonicalStageVi(generationStatus) : 'Chưa chạy'}{progress !== null ? ` · ${progress}%` : ''}</span>
+                          <span>{qcStatus ? qcStatusVi(qcStatus) : 'Chưa kiểm tra'}</span>
+                          <span>{resource.local_path ? 'Đã lưu' : 'Chưa có'}</span>
+                          <span title={errorText}>{errorText || '—'}</span>
+                        </div>
+                      )
+                    })}
+                    {!activeCanonicalResources.length && <div className="canonical-resource-empty">Chưa có resource canonical. Đồng bộ hoặc bắt đầu tạo ảnh chuẩn để xem trạng thái từng tài nguyên.</div>}
+                  </div>
+                </div>
+                <div className="canonical-live-grid">
+                  <section className="canonical-live-log">
+                    <div className="canonical-live-head">
+                      <div><span>LOG REALTIME</span><strong>{canonicalEvents.length} sự kiện gần nhất</strong></div>
+                      <span>{canonicalRunState?.active ? 'Đang theo dõi' : 'Đã đồng bộ'}</span>
+                    </div>
+                    <div className="canonical-log-lines">
+                      {canonicalEvents.slice(-50).map(event => {
+                        const payload = event.payload || {}
+                        const message = uiErrorVi(String(payload.message || event.event_type))
+                        const entity = String(payload.entity_id || '')
+                        const time = event.created_at ? new Date(event.created_at).toLocaleTimeString('vi-VN') : '--:--:--'
+                        return (
+                          <div key={event.id} className={'canonical-log-line ' + String(event.severity || 'INFO').toLowerCase()}>
+                            <time>{time}</time><b>{event.severity}</b><span>{entity || eventTypeVi(event.event_type)}</span><em>{message}</em>
+                          </div>
+                        )
+                      })}
+                      {!canonicalEvents.length && <div className="canonical-log-empty">Chưa có log tạo ảnh chuẩn. Khi bắt đầu, từng bước Flow / tải ảnh / QC sẽ xuất hiện tại đây.</div>}
+                    </div>
+                  </section>
+                  <section className="canonical-live-results">
+                    <FilmMediaGallery
+                      items={canonicalGalleryItems}
+                      jobsProcessing={canonicalGenerating || canonicalQcRunning}
+                      onRefresh={async () => { if (active) { await refreshCanonicalRuntime(active.id); await refreshMedia(active.id) } }}
+                      onSelectVersion={async item => { if (item.id.startsWith('live-')) return; await api.selectFilmMedia(item.id); if (active) await refreshMedia(active.id) }}
+                    />
+                  </section>
+                </div>
+              </div>
+            )}
           </section>
           <div className={`film-editor-grid ${showAdvanced ? '' : 'film-advanced-hidden'}`}>
             <aside className="film-project-panel">
