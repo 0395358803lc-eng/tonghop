@@ -81,10 +81,10 @@ Tích hợp pipeline tạo phim TH Media với Google Flow bằng persistent Chr
 - [x] Chỉ chuyển job tiếp khi generation hiện tại kết thúc.
 - [x] Không đánh dấu Completed nếu chưa có media thật.
 - [x] Lock Character/Location/Wardrobe bằng reusable canonical references xuyên toàn phim.
-- [ ] Voice identity/dialogue continuity xuyên cảnh — verifier acoustic thật đã triển khai bằng sherpa-onnx ERes2Net + Whisper word timestamps + Silero VAD + longest clean speech chunk. Live acceptance: CHAR_001 và CHAR_002 đã calibrate theo project và toàn bộ 4 scene kiểm tra chéo PASS; NARRATOR vẫn ambiguous nên hạng mục tổng thể chưa đóng.
+- [x] Voice identity/dialogue continuity xuyên cảnh — verifier acoustic thật dùng sherpa-onnx ERes2Net + Whisper word timestamps + Silero VAD + longest clean speech chunk. Project 273b8bf6-469e-45f5-994f-53598b126c9b hiện có CHAR_001, CHAR_002 và NARRATOR đều calibrated; narrator canonical voice được lưu bằng voice profile + acoustic identity và UI đọc lại từ calibration persistent.
   - [x] CHAR_001: threshold project-calibrated ~0.236; SCENE_005 và SCENE_011 PASS so với reference SCENE_003.
   - [x] CHAR_002: threshold project-calibrated ~0.328; SCENE_008 và SCENE_012 PASS so với reference SCENE_004.
-  - [ ] NARRATOR: SCENE_007 ↔ SCENE_015 raw similarity 0.143974; calibration ambiguous, fallback 0.60 không bị ép dùng để tạo false-fail/false-pass.
+  - [x] NARRATOR: SCENE_007 ↔ SCENE_015 hiện calibrate PASS; similarity tối thiểu 0.686118, threshold project-calibrated 0.476098, margin 0.420041. Voice profile dùng xKiro voice `confident-male-vietnamese` và acoustic identity 512-d được lưu bền vững.
   - [x] Audio QC dùng threshold thật từ speaker verifier; thiếu/ambiguous evidence giữ trạng thái not_evaluated/blocked, không tự gán điểm continuity.
 - [x] Vision QC thật sau render + junction/boundary QC.
 - [x] Auto-regenerate khi QC fail theo policy.
@@ -120,16 +120,16 @@ Tích hợp pipeline tạo phim TH Media với Google Flow bằng persistent Chr
 - [x] Live 3-scene continuity chain PASS: Scene 1 -> Scene 2 -> Scene 3 bằng last-frame reference.
 - [x] Dialogue + audio acceptance trên phim 15 cảnh: 8/8 speech-required scenes PASS audio + STT.
 - [x] Pause/resume/retry acceptance qua Film Studio queue: resume/pause live giữ nguyên 15 completed jobs; retry live đã được chứng minh bởi các scene nhiều attempt và cuối cùng QC PASS.
-- [ ] Session expiry giữa job acceptance — poll-time 409/401 classification đã có test giả lập 4/4 PASS; chưa chủ động làm hết hạn session thật.
-- [ ] UI nghiệm thu trực tiếp trước khi bật AUTO PIPELINE rộng.
+- [x] Session expiry giữa job acceptance — 24/09/2026 đã chạy runtime acceptance cô lập bằng backend sidecar EXE thật: job được nhận rồi poll giữa job trả 409/401; 409 được phân loại SESSION_EXPIRED, 401 thành BRIDGE_AUTH_ERROR, run kết thúc failed, resource error, failure event tồn tại và active=false. Không chủ động đăng xuất phiên Google thật để tránh phá session người dùng.
+- [x] UI nghiệm thu trực tiếp trước khi bật AUTO PIPELINE rộng — 24/09/2026 nghiệm thu trên Tauri source + backend sidecar thật: Step 3 realtime log/gallery/stop/retry hiển thị đúng; Voice Identity đọc calibration persistent và narrator hiển thị ĐÃ CALIBRATE. Không bấm Preview/Apply TTS và không dùng thêm Flow/xKiro credit trong UI acceptance.
 
-## Trạng thái hiện tại — 22/09/2026
+## Trạng thái hiện tại — 24/09/2026
 Flow session hoạt động thật qua Bridge 0.4.0 tại 127.0.0.1:8765 và Chrome CDP 127.0.0.1:9223. Batch 4 full Film Studio acceptance đã PASS trên project 273b8bf6-469e-45f5-994f-53598b126c9b: 15/15 scene APPROVED, 14/14 junction PASS, 15 acceptance snapshots, final master QC 96.3/100 và final_v2.mp4 dài 120.042667 giây có H.264 + AAC. Recovery state clean, không có orphan job.
 
 Canonical asset layer hiện đã có Story Bible resource mapping, content SHA-256 dedupe cache, Flow media ID normalization vào provider_ref, canonical Vision QC, visual lock và reusable references đưa vào render manifest. Acoustic speaker layer hiện dùng sherpa-onnx ERes2Net 512-d trên CPU, Whisper word timestamps + Silero VAD + longest-clean-chunk, lưu embedding reference ngoài DB và chỉ lưu hash/path/provenance trong voice profile. Project calibration tách riêng từng speaker; fallback official 0.60 không được hard-enforce khi calibration ambiguous. Film Studio đã có panel Voice Identity QC để chạy acceptance theo yêu cầu và hiển thị threshold/margin/blocked scenes.
 
-Live speaker acceptance trên project 273b8bf6-469e-45f5-994f-53598b126c9b: character_status=calibrated, CHAR_001 threshold ~0.236 với SCENE_005/011 PASS, CHAR_002 threshold ~0.328 với SCENE_008/012 PASS; narrator_status=ambiguous vì SCENE_007↔015 raw similarity 0.143974 nên SCENE_015 bị block đúng contract, không bị gán FAIL bằng fallback. Không tạo video mới và không dùng thêm Flow credits cho acceptance này.
+Speaker state hiện tại trên project 273b8bf6-469e-45f5-994f-53598b126c9b: character_status=calibrated, CHAR_001 threshold ~0.237, CHAR_002 threshold ~0.329; narrator_status=calibrated với SCENE_007/015 similarity tối thiểu 0.686118, threshold 0.476098 và gap 0.420041. Narrator voice profile là xKiro `confident-male-vietnamese`; Film Studio đã sửa để đọc calibration/voice profile persistent ngay khi mở dự án thay vì phụ thuộc acceptance request realtime.
 
-Regression mới nhất của speaker tranche: speaker calibration + speaker identity + audio + pipeline 49/49 PASS, backend compileall PASS; frontend production build PASS. Full regression cũ vẫn gồm resource cache 2/2, Flow client 4/4, Batch 4 36/36, junction 16/16, master QC 8/8, snapshot 13/13, final 8/8, media 8/8.
+Regression mới nhất 24/09/2026: backend targeted regression 112/112 PASS; narrator API + narrator TTS + canonical P0 + Flow client + Batch 4 + pipeline + desktop runtime + resource cache + media đều xanh. Frontend oxlint 0 warning / 0 error và production build PASS. Tauri Rust 7/7 tests PASS và cargo check PASS.
 
-Các việc P0/P1 còn lại cần live acceptance riêng: xử lý/khóa canonical narrator voice để narrator continuity calibrate được, session expiry giữa job, và nghiệm thu UI trực tiếp trước khi mở AUTO PIPELINE rộng.
+Ba gate trước AUTO PIPELINE rộng đã đóng: canonical narrator voice, session expiry giữa job và UI acceptance trực tiếp đều PASS. P1 Bước 3 ngày 24/09/2026 cũng đã hoàn tất: bảng trạng thái từng canonical resource theo Generation/Provider/QC/File/Error; xuất JSON chẩn đoán theo project không chứa API key; command Tauri mở `film_assets/<project_id>` có chặn path traversal; resource đã tạo vẫn hiển thị khi project chuyển sang `needs_repair`; Flow health không còn retry mỗi 5 giây khi chưa đăng nhập. Bước tiếp theo là mở AUTO PIPELINE rộng theo controlled acceptance, vẫn giữ one-run-per-project, stop/retry và evidence gate trước khi phát hành.
